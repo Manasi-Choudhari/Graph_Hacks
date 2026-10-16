@@ -920,6 +920,100 @@ body {
 .detail-key { color: var(--text-muted); }
 .detail-val { color: var(--text-primary); font-weight: 500; font-family: var(--font-mono); font-size: 11px; }
 
+/* ── Evidence caption ───────────────────────────────────────────────── */
+.graph-caption {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  max-width: 360px;
+  background: rgba(13, 20, 36, 0.9);
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #fde68a;
+  backdrop-filter: blur(8px);
+}
+
+/* ── Live tool calls ────────────────────────────────────────────────── */
+.tool-call-card.running { border-left-color: var(--warning); }
+.tool-call-card.failed  { border-left-color: var(--danger); }
+.tool-ms {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+.tool-spinner {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(245, 158, 11, 0.3);
+  border-top-color: var(--warning);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.response-meta {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono);
+}
+
+/* ── Actions ────────────────────────────────────────────────────────── */
+.tab-count {
+  font-size: 10px;
+  background: var(--warning);
+  color: #111;
+  border-radius: 10px;
+  padding: 0 6px;
+  font-weight: 700;
+}
+.action-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.action-card.pending { border-left: 3px solid var(--warning); }
+.action-card.approved { border-left: 3px solid var(--success); }
+.action-card.rejected { border-left: 3px solid var(--text-muted); opacity: 0.7; }
+.action-type {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-glow);
+  text-transform: uppercase;
+}
+.status-pill {
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 10px;
+  padding: 2px 8px;
+}
+.status-pill.PENDING_APPROVAL { background: rgba(245,158,11,0.18); color: var(--warning); }
+.status-pill.APPROVED { background: rgba(16,185,129,0.18); color: var(--success); }
+.status-pill.REJECTED { background: rgba(148,163,184,0.18); color: var(--text-muted); }
+.evidence-chip {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1px 6px;
+  color: var(--text-secondary);
+}
+.btn-success {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.35);
+  color: var(--success);
+}
+
 /* ── Responsive ─────────────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .app-shell {

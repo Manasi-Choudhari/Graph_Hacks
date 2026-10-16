@@ -9,7 +9,10 @@ const NODE_COLORS = {
   Entity: '#10b981',
   shell_company: '#dc2626',
   mule: '#ea580c',
+  crypto_exchange: '#eab308',
 }
+
+const EVIDENCE_COLOR = '#facc15'
 
 const EDGE_COLORS = {
   TRANSACTED_WITH: '#3b82f6',
@@ -23,6 +26,7 @@ const EDGE_COLORS = {
 function getNodeColor(node) {
   if (node.entity_type === 'shell_company') return NODE_COLORS.shell_company
   if (node.entity_type === 'mule') return NODE_COLORS.mule
+  if (node.entity_type === 'crypto_exchange') return NODE_COLORS.crypto_exchange
   if (node.is_suspicious) return '#ef4444'
   return NODE_COLORS[node.type] || '#64748b'
 }
@@ -35,7 +39,7 @@ function getNodeRadius(node) {
   return 9
 }
 
-export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] }) {
+export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [], highlightEdges = [], caption }) {
   const svgRef = useRef(null)
   const simRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
@@ -126,14 +130,26 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
       .force('collision', d3.forceCollide().radius(d => getNodeRadius(d) + 8))
     simRef.current = sim
 
+    const evidenceEdges = new Set(highlightEdges)
+    const hasEvidence = evidenceEdges.size > 0
+    const endId = v => (typeof v === 'object' ? v.id : v)
+    const isEvidence = d => {
+      const s = endId(d.source), t = endId(d.target)
+      return evidenceEdges.has(`${s}|${t}`) || evidenceEdges.has(`${t}|${s}`)
+    }
+    links.forEach(l => { l.evidence = isEvidence(l) })
+    const focusNodes = new Set(highlightIds)
+    const dimNode = d => focusNodes.size > 0 && hasEvidence && !focusNodes.has(d.id)
+
     // Edges
     const link = g.append('g')
       .selectAll('line')
       .data(links)
       .join('line')
-      .attr('stroke', d => d.is_suspicious ? '#ef4444' : (EDGE_COLORS[d.type] || EDGE_COLORS.default))
-      .attr('stroke-width', d => d.is_suspicious ? 2 : 1)
-      .attr('stroke-opacity', d => d.is_suspicious ? 0.8 : 0.4)
+      .attr('stroke', d => d.evidence ? EVIDENCE_COLOR : d.is_suspicious ? '#ef4444' : (EDGE_COLORS[d.type] || EDGE_COLORS.default))
+      .attr('stroke-width', d => d.evidence ? 3.5 : d.is_suspicious ? 2 : 1)
+      .attr('stroke-opacity', d => d.evidence ? 1 : hasEvidence ? 0.12 : d.is_suspicious ? 0.8 : 0.4)
+      .attr('filter', d => d.evidence ? 'url(#glow)' : null)
       .attr('marker-end', d => d.type === 'TRANSACTED_WITH'
         ? (d.is_suspicious ? 'url(#arrow-suspicious)' : 'url(#arrow)')
         : null)
@@ -144,6 +160,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
       .data(nodes)
       .join('g')
       .attr('cursor', 'pointer')
+      .attr('opacity', d => dimNode(d) ? 0.3 : 1)
       .call(
         d3.drag()
           .on('start', (event, d) => {
@@ -163,7 +180,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
       .attr('fill', d => getNodeColor(d))
       .attr('fill-opacity', 0.85)
       .attr('stroke', d => {
-        if (highlightIds.includes(d.id)) return '#fff'
+        if (highlightIds.includes(d.id)) return hasEvidence ? EVIDENCE_COLOR : '#fff'
         if (d.is_suspicious) return '#ef4444'
         return 'rgba(255,255,255,0.15)'
       })
@@ -219,7 +236,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
     })
 
     return () => sim.stop()
-  }, [graphData, highlightIds, onNodeClick])
+  }, [graphData, highlightIds, highlightEdges, onNodeClick])
 
   useEffect(() => {
     const cleanup = renderGraph()
@@ -243,6 +260,8 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
   return (
     <div className="graph-canvas-wrapper">
       <svg ref={svgRef} />
+
+      {caption && <div className="graph-caption">{caption}</div>}
 
       {/* Tooltip */}
       {tooltip && (
@@ -327,6 +346,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [] 
           { color: '#3b82f6', label: 'Account' },
           { color: '#dc2626', label: 'Shell Company' },
           { color: '#ea580c', label: 'Mule Account' },
+          { color: '#eab308', label: 'Cash-out Exchange' },
           { color: '#8b5cf6', label: 'IP Address' },
           { color: '#06b6d4', label: 'Device' },
           { color: '#10b981', label: 'Entity' },

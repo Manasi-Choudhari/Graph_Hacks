@@ -14,3 +14,32 @@ export const getInfra      = (id) => api.get(`/accounts/${id}/infrastructure`).t
 export const getMemory     = (sid) => api.get(`/sessions/${sid}/memory`).then(r => r.data)
 export const seedDatabase  = () => api.post('/seed').then(r => r.data)
 export const sendChat      = (message, session_id) => api.post('/chat', { message, session_id }).then(r => r.data)
+export const getActions    = (status) => api.get('/actions', { params: status ? { status } : {} }).then(r => r.data)
+export const reviewAction  = (id, decision) => api.post(`/actions/${id}/review`, { decision }).then(r => r.data)
+export const getCommunities = () => api.get('/graph/communities').then(r => r.data)
+
+/** POST /api/chat/stream and invoke onEvent for every Server-Sent Event. */
+export async function streamChat(message, session_id, onEvent) {
+  const res = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id }),
+  })
+  if (!res.ok || !res.body) throw new Error(`Stream failed: HTTP ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('')
+      if (data) onEvent(JSON.parse(data))
+    }
+  }
+}
