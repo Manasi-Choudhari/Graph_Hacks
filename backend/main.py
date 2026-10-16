@@ -16,9 +16,12 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+from contextlib import asynccontextmanager
+from typing import Literal
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -26,15 +29,35 @@ load_dotenv(override=True)
 
 from db import init_schema, get_graph
 import tools as graph_tools
-from agent import run_agent
+from agent import run_agent, clear_tool_cache
+from mcp_server import mcp
 
 # ── App setup ────────────────────────────────────────────────────────────────
+
+mcp_app = mcp.streamable_http_app(streamable_http_path="/", host=os.getenv("MCP_HOST", "127.0.0.1"))
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    print("🚀 FraudScope AI starting up...")
+    try:
+        init_schema()
+        print("✅ FalkorDB connected and schema initialized")
+    except Exception as e:
+        print(f"⚠️  FalkorDB not ready yet: {e}")
+        print("   Make sure FalkorDB is running: docker run -p 6379:6379 falkordb/falkordb:latest")
+    async with mcp.session_manager.run():
+        print("🔌 MCP server available at /mcp/")
+        yield
+
 
 app = FastAPI(
     title="FraudScope AI",
     description="AI agent for financial fraud investigation powered by FalkorDB graph database",
     version="1.0.0",
+    lifespan=lifespan,
 )
+app.mount("/mcp", mcp_app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,19 +70,6 @@ app.add_middleware(
 # In-memory session store (conversation histories)
 # In production, this would be stored in FalkorDB memory graphs
 sessions: dict[str, list[dict]] = {}
-
-
-# ── Startup ───────────────────────────────────────────────────────────────────
-
-@app.on_event("startup")
-async def startup():
-    print("🚀 FraudScope AI starting up...")
-    try:
-        init_schema()
-        print("✅ FalkorDB connected and schema initialized")
-    except Exception as e:
-        print(f"⚠️  FalkorDB not ready yet: {e}")
-        print("   Make sure FalkorDB is running: docker run -p 6379:6379 falkordb/falkordb:latest")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -170,7 +180,7 @@ async def get_full_graph(limit: int = 150):
 
         # Get edges
         edge_query = """
-        MATCH (src)-[r]->(dst)
+        MATCH (src)-[r:TRANSACTED_WITH|USES_IP|USES_DEVICE|OWNED_BY]->(dst)
         WHERE (src:Account OR src:IPAddress OR src:Device)
           AND (dst:Account OR dst:IPAddress OR dst:Device OR dst:Entity)
         RETURN 
@@ -245,16 +255,7 @@ async def chat(req: ChatRequest):
     history = sessions.get(req.session_id, [])
     try:
         result = await run_agent(req.message, req.session_id, history)
-
-        # Append to history
-        if req.session_id not in sessions:
-            sessions[req.session_id] = []
-        sessions[req.session_id].append({"role": "user", "content": req.message})
-        sessions[req.session_id].append({"role": "model", "content": result["response"]})
-
-        # Keep last 20 messages
-        sessions[req.session_id] = sessions[req.session_id][-20:]
-
+        _remember(req.session_id, req.message, result["response"])
         return result
     except Exception as e:
         import traceback
@@ -262,7 +263,94 @@ async def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── WebSocket chat (streaming simulation) ────────────────────────────────────
+def _remember(session_id: str, user_message: str, response: str) -> None:
+    history = sessions.setdefault(session_id, [])
+    history.append({"role": "user", "content": user_message})
+    history.append({"role": "assistant", "content": response})
+    sessions[session_id] = history[-20:]
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, default=str)}\n\n"
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """Server-Sent Events: tool calls are pushed the moment they run, then the final answer."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_event(event: dict):
+        await queue.put(event)
+
+    async def worker():
+        try:
+            result = await run_agent(req.message, req.session_id, sessions.get(req.session_id, []), on_event)
+            _remember(req.session_id, req.message, result["response"])
+            await queue.put({
+                "type": "response",
+                "content": result["response"],
+                "elapsed_ms": result.get("elapsed_ms"),
+                "tool_count": len(result.get("tool_calls", [])),
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await queue.put({"type": "error", "content": str(e)})
+        finally:
+            await queue.put(None)
+
+    async def events():
+        task = asyncio.create_task(worker())
+        try:
+            while (event := await queue.get()) is not None:
+                yield _sse(event)
+        finally:
+            task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Actions (human-in-the-loop) ───────────────────────────────────────────────
+
+class ReviewRequest(BaseModel):
+    decision: Literal["approve", "reject"]
+    reviewer: str = "analyst"
+
+
+@app.get("/api/actions")
+async def get_actions(status: str | None = None):
+    return graph_tools.list_actions(status)
+
+
+@app.post("/api/actions/{action_id}/review")
+async def review_action(action_id: str, req: ReviewRequest):
+    result = graph_tools.review_action(action_id, req.decision, req.reviewer)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    clear_tool_cache()
+    return result
+
+
+# ── Graph algorithms ──────────────────────────────────────────────────────────
+
+@app.get("/api/graph/communities")
+async def get_communities():
+    try:
+        return graph_tools.detect_fraud_communities()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/graph/rank")
+async def get_ranking(metric: str = "pagerank", limit: int = 10):
+    try:
+        return graph_tools.rank_key_accounts(metric, limit)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── WebSocket chat ────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/chat/{session_id}")
 async def ws_chat(websocket: WebSocket, session_id: str):
@@ -284,32 +372,18 @@ async def ws_chat(websocket: WebSocket, session_id: str):
             # Send typing indicator
             await websocket.send_json({"type": "typing", "session_id": session_id})
 
+            async def on_event(event: dict):
+                await websocket.send_text(json.dumps(event, default=str))
+
             try:
-                result = await run_agent(user_message, session_id, sessions[session_id])
-
-                # Stream tool calls as they come
-                for i, tc in enumerate(result.get("tool_calls", [])):
-                    await websocket.send_json({
-                        "type": "tool_call",
-                        "tool": tc["tool"],
-                        "args": tc["args"],
-                        "cypher": tc.get("cypher", ""),
-                        "result": result["tool_results"][i] if i < len(result["tool_results"]) else {},
-                    })
-                    await asyncio.sleep(0.1)
-
-                # Send final response
+                result = await run_agent(user_message, session_id, sessions[session_id], on_event)
                 await websocket.send_json({
                     "type": "response",
                     "content": result["response"],
                     "tool_calls": result["tool_calls"],
                     "session_id": session_id,
                 })
-
-                # Update history
-                sessions[session_id].append({"role": "user", "content": user_message})
-                sessions[session_id].append({"role": "model", "content": result["response"]})
-                sessions[session_id] = sessions[session_id][-20:]
+                _remember(session_id, user_message, result["response"])
 
             except Exception as e:
                 await websocket.send_json({
@@ -329,6 +403,7 @@ async def seed_database():
     try:
         import seed
         seed.seed_graph()
+        clear_tool_cache()
         overview = graph_tools.get_graph_overview()
         return {"status": "seeded", "overview": overview}
     except Exception as e:

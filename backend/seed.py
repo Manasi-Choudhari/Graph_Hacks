@@ -9,7 +9,6 @@ Creates a realistic financial crime graph with:
 """
 
 import random
-import uuid
 import sys
 from datetime import datetime, timedelta
 from faker import Faker
@@ -25,13 +24,16 @@ random.seed(42)
 
 
 def _uid() -> str:
-    return str(uuid.uuid4())[:8]
+    return f"{random.getrandbits(32):08x}"
 
 
 def seed_graph():
     g = get_graph()
+    random.seed(42)
+    Faker.seed(42)
 
     print("🌱 Seeding FraudScope graph into FalkorDB...")
+    g.query("MATCH (n) DETACH DELETE n")
 
     # ── 1. Legitimate accounts ───────────────────────────────────────────────
     legit_accounts = []
@@ -207,6 +209,43 @@ def seed_graph():
                 },
             )
 
+    # Layering chain: mule → mule → … → cash-out exchange account
+    for ring_num, ring in enumerate(fraud_rings):
+        cashout_id = f"CASHOUT_{_uid()}"
+        g.query(
+            """
+            MERGE (a:Account {id: $id})
+            SET a.name = $name, a.country = $country, a.balance = $balance,
+                a.risk_score = $risk, a.is_suspicious = false,
+                a.entity_type = 'crypto_exchange', a.created_at = $ts
+            """,
+            {
+                "id": cashout_id,
+                "name": f"{random.choice(['Nova', 'Orbit', 'Zenith'])}Swap Exchange {ring_num + 1}",
+                "country": random.choice(["SC", "VG", "MT"]),
+                "balance": round(random.uniform(1e6, 5e6), 2),
+                "risk": round(random.uniform(0.3, 0.5), 3),
+                "ts": datetime.utcnow().isoformat(),
+            },
+        )
+        chain = ring[1:] + [cashout_id]
+        for src, dst in zip(chain, chain[1:]):
+            for _ in range(random.randint(2, 3)):
+                g.query(
+                    """
+                    MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+                    CREATE (src)-[:TRANSACTED_WITH {id: $tx_id, amount: $amount, currency: 'USD',
+                        timestamp: $ts, is_suspicious: true, channel: 'wire', pattern: 'layering'}]->(dst)
+                    """,
+                    {
+                        "src": src,
+                        "dst": dst,
+                        "tx_id": f"TX_{_uid()}",
+                        "amount": round(random.uniform(9000, 9999), 2),
+                        "ts": (datetime.utcnow() - timedelta(days=random.randint(0, 20))).isoformat(),
+                    },
+                )
+
     # ── 4. Shared IP addresses (key fraud signal) ────────────────────────────
     for ring in fraud_rings:
         shared_ip = fake.ipv4()
@@ -307,6 +346,9 @@ def seed_graph():
                     "acc": acc_id,
                 },
             )
+
+    from tools import build_flow_projection
+    build_flow_projection()
 
     print("✅ FraudScope graph seeded successfully!")
     print(f"   Accounts: {len(all_accounts)}")
