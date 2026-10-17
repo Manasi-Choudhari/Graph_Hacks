@@ -17,6 +17,10 @@ export const sendChat      = (message, session_id) => api.post('/chat', { messag
 export const getActions    = (status) => api.get('/actions', { params: status ? { status } : {} }).then(r => r.data)
 export const reviewAction  = (id, decision) => api.post(`/actions/${id}/review`, { decision }).then(r => r.data)
 export const getCommunities = () => api.get('/graph/communities').then(r => r.data)
+export const ingestFile    = (formData) => api.post('/ingest/file', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
+export const ingestJson    = (data, mode = 'append') => api.post('/ingest/json', { data, mode }).then(r => r.data)
+export const ingestSample  = (mode = 'append') => api.post('/ingest/sample', null, { params: { mode } }).then(r => r.data)
+export const getTemplateUrl = (type = 'csv') => `/api/ingest/template?type=${type}`
 
 /** POST /api/chat/stream and invoke onEvent for every Server-Sent Event. */
 export async function streamChat(message, session_id, onEvent) {

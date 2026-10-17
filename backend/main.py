@@ -19,7 +19,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File, Form, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -31,6 +31,7 @@ from db import init_schema, get_graph
 import tools as graph_tools
 from agent import run_agent, clear_tool_cache
 from mcp_server import mcp
+import ingestion
 
 # ── App setup ────────────────────────────────────────────────────────────────
 
@@ -406,6 +407,80 @@ async def seed_database():
         clear_tool_cache()
         overview = graph_tools.get_graph_overview()
         return {"status": "seeded", "overview": overview}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dynamic Ingestion Endpoints ───────────────────────────────────────────────
+
+@app.post("/api/ingest/file")
+async def ingest_file(
+    file: UploadFile = File(...),
+    mode: str = Form("append"),
+):
+    """
+    Ingest a CSV or JSON file containing accounts, transactions, or infrastructure.
+    mode: 'append' (default) preserves existing data; 'replace' wipes before importing.
+    """
+    try:
+        content_bytes = await file.read()
+        filename = file.filename or ""
+        text = content_bytes.decode("utf-8", errors="replace")
+
+        if filename.endswith(".json") or file.content_type == "application/json":
+            parsed = ingestion.parse_json_content(text)
+        else:
+            parsed = ingestion.parse_csv_content(text)
+
+        result = ingestion.ingest_into_falkordb(parsed, mode=mode)
+        clear_tool_cache()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ingestion failed: {str(e)}")
+
+
+class IngestJsonRequest(BaseModel):
+    data: Any
+    mode: str = "append"
+
+
+@app.post("/api/ingest/json")
+async def ingest_json(req: IngestJsonRequest):
+    """
+    Ingest raw JSON accounts/transactions bundle directly.
+    """
+    try:
+        parsed = ingestion.parse_json_content(req.data)
+        result = ingestion.ingest_into_falkordb(parsed, mode=req.mode)
+        clear_tool_cache()
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"JSON ingestion failed: {str(e)}")
+
+
+@app.get("/api/ingest/template")
+async def download_template(type: str = "csv"):
+    """
+    Download a sample CSV or JSON template for structuring data.
+    """
+    tpl = ingestion.get_template(type)
+    return Response(
+        content=tpl["content"],
+        media_type=tpl["content_type"],
+        headers={"Content-Disposition": f'attachment; filename="{tpl["filename"]}"'},
+    )
+
+
+@app.post("/api/ingest/sample")
+async def ingest_sample_syndicate(mode: str = "append"):
+    """
+    One-click import of an international layering syndicate dataset.
+    """
+    try:
+        sample_data = ingestion.get_sample_syndicate_dataset()
+        result = ingestion.ingest_into_falkordb(sample_data, mode=mode)
+        clear_tool_cache()
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

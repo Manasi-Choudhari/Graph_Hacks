@@ -136,5 +136,15 @@ def recall_investigation_memory(
     return tools.recall_investigation_memory(session_id, account_id)
 
 
+@mcp.tool(description="Ingest accounts, transactions, and infrastructure into the FalkorDB graph. mode is 'append' or 'replace'.")
+def ingest_dataset(
+    dataset_json: Annotated[str, Field(description="JSON string with 'accounts', 'transactions', 'infrastructure'")],
+    mode: Annotated[Literal["append", "replace"], Field(description="'append' preserves existing, 'replace' wipes first")] = "append",
+) -> dict:
+    import ingestion
+    parsed = ingestion.parse_json_content(dataset_json)
+    return ingestion.ingest_into_falkordb(parsed, mode=mode)
+
+
 if __name__ == "__main__":
     mcp.run("stdio")

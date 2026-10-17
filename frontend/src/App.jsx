@@ -5,21 +5,24 @@ import GraphCanvas from './GraphCanvas.jsx'
 import {
   createSession, getOverview, getAlerts, getFullGraph,
   getSubgraph, streamChat, seedDatabase, searchAccounts, getMemory,
-  getActions, reviewAction, getCommunities
+  getActions, reviewAction, getCommunities,
+  ingestFile, ingestSample, getTemplateUrl
 } from './api.js'
 
 /* ── Icons (inline SVG, no deps) ─────────────────────────────────────── */
 const Icon = {
-  Send:    () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
-  Search:  () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
-  Alert:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
-  Graph:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="5" r="3"/><circle cx="19" cy="19" r="3"/><circle cx="5" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/></svg>,
-  Stats:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
-  Brain:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2a2.5 2.5 0 015 0"/><path d="M14.5 22a2.5 2.5 0 01-5 0"/><path d="M20 6a2 2 0 012 2v8a2 2 0 01-2 2"/><path d="M4 18a2 2 0 01-2-2V8a2 2 0 012-2"/><path d="M14.5 2A3.5 3.5 0 0118 5.5v13a3.5 3.5 0 01-3.5 3.5"/><path d="M9.5 2A3.5 3.5 0 006 5.5v13A3.5 3.5 0 009.5 22"/></svg>,
-  Seed:    () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 2 4c0 5 3 9 10 8"/><path d="M12 12c0-5 5-8 10-8-0 5-3 9-10 8"/></svg>,
-  Tool:    () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>,
-  Chevron: ({ open }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0)', transition: '200ms' }}><polyline points="9 18 15 12 9 6"/></svg>,
-  Memory:  () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="12" x2="6" y2="12"/><line x1="10" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="14" y2="12"/><line x1="18" y1="12" x2="18" y2="12"/></svg>,
+  Send:     () => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>,
+  Search:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+  Alert:    () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>,
+  Graph:    () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="5" r="3"/><circle cx="19" cy="19" r="3"/><circle cx="5" cy="19" r="3"/><line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/></svg>,
+  Stats:    () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>,
+  Brain:    () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9.5 2a2.5 2.5 0 015 0"/><path d="M14.5 22a2.5 2.5 0 01-5 0"/><path d="M20 6a2 2 0 012 2v8a2 2 0 01-2 2"/><path d="M4 18a2 2 0 01-2-2V8a2 2 0 012-2"/><path d="M14.5 2A3.5 3.5 0 0118 5.5v13a3.5 3.5 0 01-3.5 3.5"/><path d="M9.5 2A3.5 3.5 0 006 5.5v13A3.5 3.5 0 009.5 22"/></svg>,
+  Seed:     () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 22V12"/><path d="M12 12C12 7 7 4 2 4c0 5 3 9 10 8"/><path d="M12 12c0-5 5-8 10-8-0 5-3 9-10 8"/></svg>,
+  Tool:     () => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/></svg>,
+  Chevron:  ({ open }) => <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0)', transition: '200ms' }}><polyline points="9 18 15 12 9 6"/></svg>,
+  Memory:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="6" width="20" height="12" rx="2"/><line x1="6" y1="12" x2="6" y2="12"/><line x1="10" y1="12" x2="10" y2="12"/><line x1="14" y1="12" x2="14" y2="12"/><line x1="18" y1="12" x2="18" y2="12"/></svg>,
+  Upload:   () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>,
+  Download: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
 }
 
 /* ── Risk helpers ─────────────────────────────────────────────────────── */
@@ -512,6 +515,188 @@ function OverviewPanel({ overview }) {
   )
 }
 
+/* ── IngestModal ─────────────────────────────────────────────────────── */
+function IngestModal({ isOpen, onClose, onIngested }) {
+  const [mode, setMode] = useState('append')
+  const [loading, setLoading] = useState(false)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState(null)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef(null)
+
+  if (!isOpen) return null
+
+  const handleFile = async (file) => {
+    if (!file) return
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('mode', mode)
+      const res = await ingestFile(formData)
+      setResult(res)
+      if (onIngested) onIngested(res)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Upload failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDrop = (e) => {
+    e.preventDefault()
+    setDragOver(false)
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      handleFile(e.dataTransfer.files[0])
+    }
+  }
+
+  const handleSample = async () => {
+    setLoading(true)
+    setError(null)
+    setResult(null)
+    try {
+      const res = await ingestSample(mode)
+      setResult(res)
+      if (onIngested) onIngested(res)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'Sample load failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-header">
+          <div className="modal-title">
+            <span style={{ color: 'var(--accent-purple)' }}><Icon.Upload /></span>
+            <span>Dynamic Graph Data Ingestion</span>
+          </div>
+          <button className="modal-close" onClick={onClose}>✕</button>
+        </div>
+
+        {/* Mode Selector */}
+        <div style={{ marginBottom: 8, fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Ingestion Mode</div>
+        <div className="mode-selector">
+          <div
+            className={`mode-option ${mode === 'append' ? 'selected' : ''}`}
+            onClick={() => setMode('append')}
+          >
+            <div className="mode-option-title">➕ Append to Graph</div>
+            <div className="mode-option-desc">Preserves existing nodes and relationships, connects new entities dynamically.</div>
+          </div>
+          <div
+            className={`mode-option ${mode === 'replace' ? 'selected' : ''}`}
+            onClick={() => setMode('replace')}
+          >
+            <div className="mode-option-title" style={{ color: mode === 'replace' ? 'var(--warning)' : 'inherit' }}>🔄 Wipe &amp; Replace</div>
+            <div className="mode-option-desc">Clears current graph completely before loading the new accounts and transactions dataset.</div>
+          </div>
+        </div>
+
+        {/* Dropzone */}
+        <div
+          className={`dropzone ${dragOver ? 'active' : ''}`}
+          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+          onDragLeave={() => setDragOver(false)}
+          onDrop={handleDrop}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <input
+            type="file"
+            ref={fileInputRef}
+            style={{ display: 'none' }}
+            accept=".csv,.json,text/csv,application/json"
+            onChange={(e) => {
+              if (e.target.files?.[0]) handleFile(e.target.files[0])
+            }}
+          />
+          <div className="dropzone-icon">
+            <Icon.Upload />
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
+            {loading ? 'Ingesting data into FalkorDB...' : 'Drop CSV or JSON file here, or click to browse'}
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+            Supports transactions CSV (source_id, target_id, amount...) or accounts &amp; transactions JSON bundle
+          </div>
+        </div>
+
+        {/* Templates and Sample Bar */}
+        <div className="template-bar">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)' }}>
+            <Icon.Download />
+            <span>Templates:</span>
+            <a
+              href={getTemplateUrl('csv')}
+              download="fraudscope_transactions_template.csv"
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '3px 8px' }}
+            >
+              CSV Template
+            </a>
+            <a
+              href={getTemplateUrl('json')}
+              download="fraudscope_template.json"
+              className="btn btn-ghost"
+              style={{ fontSize: 11, padding: '3px 8px' }}
+            >
+              JSON Template
+            </a>
+          </div>
+          <button
+            className="btn btn-ghost"
+            style={{ borderColor: 'rgba(139,92,246,0.4)', color: '#c084fc', fontSize: 11, padding: '4px 10px' }}
+            onClick={handleSample}
+            disabled={loading}
+          >
+            ⚡ Load Sample Syndicate (5 Accs, 6 TXs)
+          </button>
+        </div>
+
+        {/* Error message */}
+        {error && (
+          <div style={{ padding: '10px 14px', background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 8, color: 'var(--danger)', fontSize: 12, marginTop: 12 }}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {/* Result Summary */}
+        {result && (
+          <div className="ingest-result-card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--success)', fontWeight: 600, fontSize: 13 }}>
+              <span>✓ Ingestion Successful!</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>({result.elapsed_ms}ms)</span>
+            </div>
+            <div className="ingest-stat-grid">
+              <div className="ingest-stat-box">
+                <div className="val">{result.accounts_created_or_updated}</div>
+                <div className="lbl">Accounts</div>
+              </div>
+              <div className="ingest-stat-box">
+                <div className="val">{result.transactions_created}</div>
+                <div className="lbl">Transactions</div>
+              </div>
+              <div className="ingest-stat-box">
+                <div className="val">{result.ips_linked + result.devices_linked}</div>
+                <div className="lbl">Infra Links</div>
+              </div>
+              <div className="ingest-stat-box">
+                <div className="val">${Math.round(result.total_volume_usd || 0).toLocaleString()}</div>
+                <div className="lbl">Volume USD</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 /* ── App ──────────────────────────────────────────────────────────────── */
 export default function App() {
   const [sessionId, setSessionId] = useState(null)
@@ -526,6 +711,14 @@ export default function App() {
   const [caption, setCaption] = useState(null)
   const [dbStatus, setDbStatus] = useState('checking')
   const [actions, setActions] = useState([])
+  const [showIngestModal, setShowIngestModal] = useState(false)
+
+  const handleIngestSuccess = async (res) => {
+    await handleRefresh()
+    if (res?.overview) setOverview(res.overview)
+    const full = await getFullGraph().catch(() => null)
+    if (full?.nodes?.length) showGraph(full)
+  }
 
   const refreshActions = useCallback(() => {
     getActions().then(d => setActions(d.actions || [])).catch(() => {})
@@ -693,6 +886,14 @@ export default function App() {
           </button>
           <button
             className="btn btn-ghost"
+            style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#c084fc' }}
+            onClick={() => setShowIngestModal(true)}
+          >
+            <Icon.Upload />
+            Ingest Data
+          </button>
+          <button
+            className="btn btn-ghost"
             style={{ borderColor: 'rgba(59,130,246,0.3)', color: 'var(--accent-glow)' }}
             onClick={async () => {
               const full = await getFullGraph().catch(() => null)
@@ -786,6 +987,13 @@ export default function App() {
           onActionProposed={refreshActions}
         />
       </aside>
+
+      {/* ── Ingestion Modal ── */}
+      <IngestModal
+        isOpen={showIngestModal}
+        onClose={() => setShowIngestModal(false)}
+        onIngested={handleIngestSuccess}
+      />
     </div>
   )
 }
