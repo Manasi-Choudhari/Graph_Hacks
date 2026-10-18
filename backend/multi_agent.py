@@ -25,6 +25,7 @@ from agent import (
     _prepare_args,
     _groq_complete,
     _auto_save_memory,
+    _answer_without_llm,
     PartialRunError,
     MAX_TOOL_ROUNDS,
     SYSTEM_PROMPT,
@@ -253,6 +254,9 @@ async def _run_specialist_gemini(role_info, prompt, scoped_tools, user_message, 
                 else:
                     response = await asyncio.to_thread(chat.send_message, function_responses)
 
+            if not response_text.strip() and trace["tool_calls"]:
+                response_text = _answer_without_llm(trace, session_id, "Model returned no summary")["response"]
+
             return {
                 "response": response_text,
                 "role": role_info["title"],
@@ -312,6 +316,9 @@ async def _run_specialist_groq(role_info, prompt, scoped_tools, user_message, se
                 "tool_call_id": tc.id,
                 "content": _format_tool_result_for_llm(tc.function.name, result),
             })
+
+    if not response_text.strip() and trace["tool_calls"]:
+        response_text = _answer_without_llm(trace, session_id, "Model returned no summary")["response"]
 
     return {
         "response": response_text,

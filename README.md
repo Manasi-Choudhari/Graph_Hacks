@@ -5,6 +5,16 @@
 
 An AI agent that investigates financial fraud by reasoning over a **FalkorDB graph database**. The graph is not a visualization layer — it **is** the intelligence. Every decision the agent makes is driven by multi-hop graph traversals, Cypher queries, and graph-propagated risk scores.
 
+### Submission checklist
+
+| Requirement | Where |
+|---|---|
+| README with setup instructions and graph data model | [Setup & Running](#-setup--running) · [Graph Data Model](#️-graph-data-model) |
+| Cypher queries / graph algorithms the product depends on | [Key Cypher Queries](#-key-cypher-queries) · [Agent Tools](#-agent-tools-served-over-mcp) |
+| Live deployment or complete local setup | Runs locally with one Docker container — see [Setup & Running](#-setup--running) (about 5 minutes) |
+| Graph map: nodes, relationships, how the agent queries them | [Graph Data Model](#️-graph-data-model) · [How the agent queries the graph](#how-the-agent-queries-the-graph) |
+| The graph doing the work | [The Graph Doing the Work](#-the-graph-doing-the-work) — a real investigation, step by step |
+
 ---
 
 ## 🎯 What It Does
@@ -15,6 +25,8 @@ FraudScope AI is a financial crime investigation agent that:
 - **Finds the key players** — `algo.pageRank` (where money concentrates) and `algo.betweenness` (brokers on the most money paths)
 - **Explains how any two accounts are connected** — `algo.SPpaths` returns the shortest evidence chains
 - **Quantifies layering** — `algo.maxFlow` measures how much money can reach a cash-out account through intermediaries
+- **Catches rapid mule relays** — a 2-hop temporal pattern finds money that arrives and leaves an account within minutes; a time slider replays the graph
+- **Ingests your own data** — upload CSV/JSON accounts, transactions and infrastructure straight into the graph
 - **Acts on what the graph shows** — proposes freeze / open case / escalate / file SAR actions, stored as `(:Action)` nodes linked to their evidence; a human approves before anything changes
 - **Speaks MCP** — every tool is served by a real MCP server; the in-app agent, Claude Desktop and Cursor all use the same registry
 - **Streams its reasoning** — tool calls appear live in the chat and the evidence path lights up on the graph
@@ -25,18 +37,28 @@ FraudScope AI is a financial crime investigation agent that:
 
 ## 🗃️ Graph Data Model
 
+Two kinds of graph live in FalkorDB: the shared `fraudscope` graph (accounts, money, infrastructure, actions) and one `memory_<session>` graph per investigation session.
+
+```mermaid
+graph LR
+    A[Account<br/>person · shell_company · mule · crypto_exchange]
+    A -- "TRANSACTED_WITH<br/>amount, timestamp, channel, pattern" --> A
+    A -. "FLOWS_TO<br/>summed per pair (for maxFlow)" .-> A
+    A -- USES_IP --> IP[IPAddress]
+    A -- USES_DEVICE --> D[Device]
+    A -- OWNED_BY --> E[Entity]
+    A -- HAS_ALERT --> AL[AlertEvent]
+    ACT[Action<br/>freeze · open_case · escalate · file_sar] -- TARGETS --> A
+    ACT -- EVIDENCED_BY --> A
+    ACT -- EVIDENCED_BY --> IP
+    ACT -. on approval .-> C[Case / SAR]
+
+    subgraph S["per-session memory graph"]
+        M1[Memory] -- FOLLOWED_BY --> M2[Memory]
+    end
 ```
-┌──────────────┐    TRANSACTED_WITH    ┌──────────────┐
-│   Account    │──────────────────────▶│   Account    │
-│  (id, name,  │                       │ (shell/mule) │
-│  risk_score, │    USES_IP            └──────────────┘
-│  country)    │──────────────────────▶ IPAddress
-└──────────────┘    USES_DEVICE        Device
-        │           OWNED_BY          Entity
-        │           HAS_ALERT         AlertEvent
-        └──────────────────────────────────────▶
-                                       Memory (per session graph)
-```
+
+The fraud signal is in the **shape** of this graph: mules in a ring share IPs and devices (`USES_IP` / `USES_DEVICE`), push structured amounts into a shell company (`TRANSACTED_WITH`), and the money leaves through a chain of mules to a crypto exchange within minutes.
 
 ### Node Types
 | Node | Key Properties |
@@ -53,7 +75,7 @@ FraudScope AI is a financial crime investigation agent that:
 ### Edge Types
 | Edge | Meaning |
 |------|---------|
-| `TRANSACTED_WITH` | Financial transaction (has amount, currency, channel, pattern) |
+| `TRANSACTED_WITH` | Financial transaction (has amount, currency, timestamp, channel, pattern) |
 | `USES_IP` | Account accessed via this IP address |
 | `USES_DEVICE` | Account accessed from this device fingerprint |
 | `OWNED_BY` | Account owned by legal entity |
@@ -61,6 +83,45 @@ FraudScope AI is a financial crime investigation agent that:
 | `FLOWS_TO` | One edge per account pair summing its transactions (input to `algo.maxFlow`, which rejects multi-edges) |
 | `TARGETS` / `EVIDENCED_BY` | Action → account it acts on / evidence that justifies it |
 | `FOLLOWED_BY` | Memory chain (agent reasoning sequence) |
+
+### How the agent queries the graph
+
+The LLM never sees raw tables. It picks MCP tools; each tool is a Cypher query or FalkorDB algorithm over a specific part of the graph, and only the compacted result goes back to the LLM.
+
+```mermaid
+graph TD
+    Q[Analyst question] --> LLM[LLM agent<br/>Groq / Gemini]
+    LLM -->|picks tools over MCP| T{17 graph tools}
+
+    T --> R1["detect_fraud_communities<br/>algo.WCC over Account–USES_IP/USES_DEVICE"]
+    T --> R2["rank_key_accounts<br/>algo.pageRank / algo.betweenness over TRANSACTED_WITH"]
+    T --> R3["explain_connection<br/>algo.SPpaths across money + infra + ownership edges"]
+    T --> R4["compute_max_flow<br/>algo.maxFlow over FLOWS_TO"]
+    T --> R5["analyze_temporal_velocity<br/>(src)-[t1]->(mule)-[t2]->(dst), t2 − t1 ≤ 30 min"]
+    T --> R6["find_fraud_rings / trace_money_flow / compute_risk_score<br/>1–4 hop traversals, cycles, neighbour risk"]
+    T --> W["propose_action<br/>CREATE (:Action)-[:TARGETS]->(:Account)"]
+
+    R1 & R2 & R3 & R4 & R5 & R6 --> G[(FalkorDB)]
+    W --> G
+    G -->|nodes, edges, Cypher, latency| LLM
+    LLM --> OUT[Answer + highlighted evidence path<br/>+ pending actions for human approval]
+```
+
+---
+
+## 🔬 The Graph Doing the Work
+
+A real run on the seeded dataset (81 accounts, 290 transactions). The agent is asked: **"Find the fraud rings and tell me what to do about them."** No ring labels are given to it; every conclusion below comes from a graph query.
+
+| Step | Tool → graph operation | What the graph returned | Decision it drives |
+|---|---|---|---|
+| 1 | `detect_fraud_communities` → `algo.WCC` over shared IPs/devices | **3 clusters of 6 accounts** (5 mules + 1 shell each). Ring 1: 42 internal transactions, 37 of them between $9,000 and $9,999, $635,966 moved inside the cluster | These are rings, not coincidences: shared infrastructure **and** structuring inside the same component. All 3 match the seeded rings, found without reading `ring_id` |
+| 2 | `analyze_temporal_velocity` → 2-hop `TRANSACTED_WITH` pattern with timestamps | **21 rapid relays across 13 mules**, $180,182 total, average turnaround 4.7 minutes | The mules are pass-through accounts, not victims: money leaves almost as soon as it arrives |
+| 3 | `compute_max_flow` → `algo.maxFlow` from `SHELL_fec21bbe` (Phantom Holdings 1) to `CASHOUT_8de08fc2` (NovaSwap Exchange 1) | **$38,798 can reach the exchange, $0 of it directly** — 100% is layered through mules | Classic layering: the shell never pays the exchange itself, so a per-transaction rule would miss it |
+| 4 | `explain_connection` → `algo.SPpaths` | Shortest chain: `SHELL_fec21bbe → MULE_0f1259e0 → CASHOUT_8de08fc2`, 2 money hops | The mule at the centre is the cash-out point; this path is highlighted on the graph and attached as evidence |
+| 5 | `propose_action` → `CREATE (:Action {status:'PENDING_APPROVAL'})-[:TARGETS]->(shell)`, `-[:EVIDENCED_BY]->(mules, IPs)` | Freeze / open-case proposals in the **Actions** tab | A human approves; only then is the account frozen and a `Case` node created |
+
+The same question against a relational table of transactions would need recursive joins for every hop and could not run community detection or max flow at all. Here, each step is one FalkorDB call that returns in milliseconds.
 
 ---
 
@@ -100,6 +161,14 @@ CALL algo.maxFlow({sourceNodes: [s], targetNodes: [t], capacityProperty: 'amount
 YIELD maxFlow, edges, edgeFlows
 RETURN maxFlow
 ```
+
+### Rapid Mule Relays (temporal 2-hop pattern)
+```cypher
+MATCH (src:Account)-[t1:TRANSACTED_WITH]->(mule:Account)-[t2:TRANSACTED_WITH]->(dst:Account)
+WHERE src.id <> dst.id AND t1.amount >= $min_amount AND t2.amount >= $min_amount
+RETURN src.id, mule.id, dst.id, t1.amount, t1.timestamp, t2.amount, t2.timestamp
+```
+Each pair is kept when `t2` leaves within the window (default 30 minutes) after `t1` arrives; turnaround, retention (`t2 / t1`) and velocity ($/min) then grade it CRITICAL / HIGH / MEDIUM.
 
 ### Multi-hop Neighbourhood of One Account
 ```cypher
@@ -171,7 +240,7 @@ RETURN m ORDER BY m.timestamp DESC
 │                                             │            │
 │                              ┌──────────────▼──────────┐ │
 │  Claude Desktop / Cursor ───►│   MCP server (/mcp/)    │ │
-│                              │  15 Cypher + algo tools │ │
+│                              │  17 Cypher + algo tools │ │
 │                              └──────────────┬──────────┘ │
 │                                             │            │
 │                              ┌──────────────▼──────────┐ │
@@ -195,58 +264,70 @@ RETURN m ORDER BY m.timestamp DESC
 
 ## 🚀 Setup & Running
 
+There is no public deployment: the app needs your own LLM API keys and a FalkorDB instance, so it runs locally. The full setup takes about 5 minutes.
+
 ### Prerequisites
 - Docker (for FalkorDB)
-- Python 3.10+
+- Python 3.10+ (tested on 3.10.11)
 - Node.js 18+
-- Gemini API key OR Groq API key
+- A free Groq API key ([console.groq.com](https://console.groq.com)) and/or Gemini API key ([aistudio.google.com](https://aistudio.google.com)). One is enough; with both, the second is used as a fallback
 
 ### 1. Start FalkorDB
 ```bash
+git clone https://github.com/Manasi-Choudhari/Graph_Hacks.git
+cd Graph_Hacks
 docker compose up -d
 # OR without compose:
 docker run -p 6379:6379 falkordb/falkordb:latest
 ```
 
-### 2. Backend Setup
+### 2. Backend setup
 ```bash
 cd backend
+python -m venv .venv
+# Windows:      .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your API keys
+cp .env.example .env        # Windows: copy .env.example .env
 ```
 
-### 3. Configure Environment
+### 3. Configure `.env`
 ```env
-GEMINI_API_KEY=your_key_here   # Get from Google AI Studio
-GROQ_API_KEY=your_key_here     # Get from console.groq.com
 LLM_PROVIDER=groq               # or "gemini"; the other is used as fallback
+GROQ_API_KEY=your_key_here
 GROQ_MODEL=openai/gpt-oss-120b
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-3.5-flash
 FALKORDB_HOST=localhost
 FALKORDB_PORT=6379
 ```
 
-### 4. Run Backend
+### 4. Run the backend
 ```bash
-cd backend
 python main.py
-# API runs at http://localhost:8000
+# API:  http://localhost:8000      (check: http://localhost:8000/health)
+# MCP:  http://localhost:8000/mcp/
 ```
 
-### 5. Frontend Setup
+### 5. Run the frontend (new terminal)
 ```bash
 cd frontend
 npm install
 npm run dev
-# UI at http://localhost:5173
+# UI: http://localhost:5173
 ```
 
-### 6. Seed the Graph
+### 6. Seed the graph
 Click **"Seed DB"** in the UI, or:
 ```bash
 cd backend
 python seed.py
 ```
+
+Then try: *"Find all fraud rings"*, *"Detect rapid mule relays"*, or *"Trace layering from SHELL_fec21bbe to CASHOUT_8de08fc2"*.
+
+### Bring your own data (optional)
+Open **Ingest Data** in the UI to upload a CSV or JSON file of accounts, transactions, IPs and devices (`append` or `replace` mode). `GET /api/ingest/template` returns the expected format, and `POST /api/ingest/sample` loads a ready-made international layering syndicate.
 
 Seeding wipes the graph and rebuilds the same deterministic dataset every time:
 - 60 legitimate accounts with 150 everyday transactions
@@ -265,6 +346,7 @@ Seeding wipes the graph and rebuilds the same deterministic dataset every time:
 | `rank_key_accounts` | `algo.pageRank` / `algo.betweenness` | Collection hubs and broker accounts |
 | `explain_connection` | `algo.SPpaths` | Shortest evidence paths between two accounts |
 | `compute_max_flow` | `algo.maxFlow` | Money routed to a target, direct vs layered |
+| `analyze_temporal_velocity` | Timestamped 2-hop pattern | Rapid pass-through mule relays, turnaround and velocity |
 | `find_fraud_rings` | Multi-hop traversal (1–4 hops) | One account's ring and shared infrastructure |
 | `trace_money_flow` | Directed path following + cycles | Layering, structuring, circular flows |
 | `compute_risk_score` | Neighbourhood aggregation | Composite risk with propagation, account status |
@@ -275,8 +357,17 @@ Seeding wipes the graph and rebuilds the same deterministic dataset every time:
 | `search_accounts` | String matching | Accounts by name, ID or entity type |
 | `get_graph_overview` | Aggregation | Graph-wide statistics |
 | `save_investigation_memory` / `recall_investigation_memory` | Per-session graph | Investigation memory |
+| `ingest_dataset` | Batched `MERGE` / `CREATE` | Loads accounts, transactions, IPs and devices into the graph |
 
 `review_action` (approve / reject) is deliberately **not** an MCP tool: agents propose, only a human analyst can approve, from the **Actions** tab or `POST /api/actions/{id}/review`.
+
+### Agent modes (switcher in the chat panel)
+
+| Mode | Endpoint | Behaviour |
+|---|---|---|
+| Standard | `POST /api/chat/stream` | One agent, up to 3 tool rounds; fastest (2–6 s) |
+| Single agent | `POST /api/chat/stream/single` | One investigator walks through Triage → Forensics → Compliance and writes a structured report |
+| Swarm | `POST /api/chat/stream/swarm` | Triage Specialist → Graph Forensics Specialist → AML Compliance Officer, each with a scoped tool set, then a combined verdict. Most thorough, but uses many more LLM calls |
 
 ---
 
@@ -314,8 +405,9 @@ Add it to Claude Desktop's `claude_desktop_config.json` or Cursor's `.cursor/mcp
 1. **"Find all fraud rings"** — WCC discovers the 3 rings; the graph shows them live
 2. **"Who are the money hubs?"** — PageRank / betweenness highlight the key accounts
 3. **"Trace layering from the top shell company to its cash-out exchange"** — max flow shows the money moved only through mules; the path lights up
-4. **"Sweep the graph and propose actions"** — proposals appear in the **Actions** tab; approving one freezes the account / opens a case in FalkorDB
-5. **"What did I investigate before?"** — recalled from the session's memory graph
+4. **"Detect rapid mule relays"** — temporal velocity finds money passed on within minutes; drag the time slider to replay it on the graph
+5. **"Sweep the graph and propose actions"** — proposals appear in the **Actions** tab; approving one freezes the account / opens a case in FalkorDB
+6. **"What did I investigate before?"** — recalled from the session's memory graph
 
 ---
 
@@ -324,8 +416,8 @@ Add it to Claude Desktop's `claude_desktop_config.json` or Cursor's `.cursor/mcp
 **Track:** Agents That Act on Connected Data
 
 **Key focus areas addressed:**
-- ✅ Multi-hop reasoning — 4-hop ring traversal, shortest evidence paths, multi-hop max flow
-- ✅ Graph queries and algorithms as agent tools — WCC, PageRank, betweenness, SPpaths, maxFlow
+- ✅ Multi-hop reasoning — 4-hop ring traversal, shortest evidence paths, multi-hop max flow, timestamped 2-hop relay detection, three-phase single-agent and swarm investigations
+- ✅ Graph queries and algorithms as agent tools — WCC, PageRank, betweenness, SPpaths, maxFlow, temporal velocity
 - ✅ Tool selection through MCP — real MCP server, shared by the agent, Claude Desktop and Cursor
 - ✅ Actions based on what the graph shows — evidence-linked Action nodes with human approval
 - ✅ Explainable results — live tool stream, Cypher + latency per call, evidence path highlighted on the graph
@@ -334,7 +426,7 @@ Add it to Claude Desktop's `claude_desktop_config.json` or Cursor's `.cursor/mcp
 
 ## 📜 Disclosure
 
-This project was built with the assistance of AI coding tools (Antigravity IDE / Gemini). All graph models, Cypher queries, fraud detection logic, and architecture decisions were designed and verified by the team.
+This project was built with the assistance of AI coding tools (Antigravity IDE / Gemini, Cursor). All graph models, Cypher queries, fraud detection logic, and architecture decisions were designed and verified by the team.
 
 ---
 

@@ -460,6 +460,23 @@ def _groq_complete(client, messages: list, tool_schemas: list, allow_tools: bool
         except APIStatusError as e:
             print(f"[WARN] Groq {model_name} failed ({e.status_code}): {e}")
             last_error = e
+            # Some models still emit a tool call under tool_choice="none"; drop tools entirely and ask for prose.
+            if not allow_tools and e.status_code == 400 and "tool_use_failed" in str(e):
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages + [{
+                            "role": "user",
+                            "content": "Tool budget exhausted. Write the final answer now using only the tool results above.",
+                        }],
+                        max_tokens=1024,
+                        temperature=0.2,
+                    )
+                    print(f"[LLM] {model_name} recovered final round without tools")
+                    return response
+                except Exception as retry_err:
+                    print(f"[WARN] Groq {model_name} no-tools retry failed: {retry_err}")
+                    last_error = retry_err
     raise last_error or RuntimeError("No Groq model available")
 
 
@@ -598,10 +615,11 @@ async def _run_with_fallback(user_message: str, session_id: str, conversation_hi
     return result
 
 
-def _answer_without_llm(trace: dict, session_id: str) -> dict:
+def _answer_without_llm(trace: dict, session_id: str,
+                        reason: str = "LLM rate limit reached") -> dict:
     """All LLM providers are rate-limited: still return what the graph found."""
     lines = [
-        "**⚠️ LLM rate limit reached — showing the raw graph findings gathered so far.** "
+        f"**⚠️ {reason} — showing the raw graph findings gathered so far.** "
         "Expand the tool cards above for full results and Cypher.",
         "",
     ]
