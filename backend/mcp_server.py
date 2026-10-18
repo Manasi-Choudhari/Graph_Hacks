@@ -85,6 +85,15 @@ def compute_max_flow(source_id: AccountId, target_id: AccountId) -> dict:
     return tools.compute_max_flow(source_id, target_id)
 
 
+@mcp.tool(description="Analyze money velocity over sliding time windows (default 30m) to detect rapid mule pass-through relays (funds arriving and quickly leaving with high retention).")
+def analyze_temporal_velocity(
+    account_id: Annotated[str | None, Field(description="Account to investigate; omit to scan the whole graph")] = None,
+    window_minutes: Annotated[int, Field(ge=1, le=1440, description="Sliding time window in minutes (e.g. 30)")] = 30,
+    min_amount: Annotated[float, Field(ge=0, description="Minimum transaction amount to consider")] = 500.0,
+) -> dict:
+    return tools.analyze_temporal_velocity(account_id, window_minutes, min_amount)
+
+
 @mcp.tool(description="Open HIGH/CRITICAL fraud alerts, newest first.")
 def get_active_alerts(limit: Annotated[int, Field(ge=1, le=100)] = 20) -> dict:
     return tools.get_active_alerts(limit)

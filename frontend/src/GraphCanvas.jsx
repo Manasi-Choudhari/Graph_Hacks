@@ -39,10 +39,18 @@ function getNodeRadius(node) {
   return 9
 }
 
-export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [], highlightEdges = [], caption }) {
+export default function GraphCanvas({
+  graphData,
+  onNodeClick,
+  highlightIds = [],
+  highlightEdges = [],
+  caption,
+  temporalFilter = null,
+}) {
   const svgRef = useRef(null)
   const simRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
+  const [edgeTooltip, setEdgeTooltip] = useState(null)
   const [selectedNode, setSelectedNode] = useState(null)
 
   const renderGraph = useCallback(() => {
@@ -72,7 +80,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
     feMerge.append('feMergeNode').attr('in', 'blur')
     feMerge.append('feMergeNode').attr('in', 'SourceGraphic')
 
-    // Arrow marker
+    // Arrow marker standard
     defs.append('marker')
       .attr('id', 'arrow')
       .attr('viewBox', '0 -5 10 10')
@@ -85,6 +93,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
       .attr('d', 'M0,-5L10,0L0,5')
       .attr('fill', '#334155')
 
+    // Arrow marker suspicious
     defs.append('marker')
       .attr('id', 'arrow-suspicious')
       .attr('viewBox', '0 -5 10 10')
@@ -96,6 +105,19 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
       .append('path')
       .attr('d', 'M0,-5L10,0L0,5')
       .attr('fill', '#ef4444')
+
+    // Arrow marker rapid relay
+    defs.append('marker')
+      .attr('id', 'arrow-rapid')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 24)
+      .attr('refY', 0)
+      .attr('markerWidth', 7)
+      .attr('markerHeight', 7)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#f59e0b')
 
     // Zoom
     const g = svg.append('g')
@@ -138,21 +160,91 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
       return evidenceEdges.has(`${s}|${t}`) || evidenceEdges.has(`${t}|${s}`)
     }
     links.forEach(l => { l.evidence = isEvidence(l) })
+
+    // Temporal filter evaluation
+    const isTemporalActive = Boolean(temporalFilter?.active)
+    const rapidEdgeSet = new Set(temporalFilter?.rapidEdges || [])
+    const windowMs = (temporalFilter?.windowMinutes || 30) * 60 * 1000
+    const currentTimeMs = temporalFilter?.currentTimeMs || Date.now()
+    const isAllTime = (temporalFilter?.windowMinutes === 0)
+
+    const isLinkActiveInTemporal = (d) => {
+      if (!isTemporalActive) return true
+      const s = endId(d.source), t = endId(d.target)
+      const isRapid = Boolean(d.is_rapid_relay || rapidEdgeSet.has(`${s}|${t}`) || rapidEdgeSet.has(`${t}|${s}`))
+      if (temporalFilter?.rapidOnly && !isRapid) return false
+      if (isAllTime) return true
+      if (!d.timestamp) return false
+      try {
+        const tMs = new Date(d.timestamp).getTime()
+        return tMs <= currentTimeMs && tMs >= (currentTimeMs - windowMs)
+      } catch {
+        return false
+      }
+    }
+
+    const activeNodeIds = new Set()
+    links.forEach(l => {
+      const s = endId(l.source), t = endId(l.target)
+      l.isRapid = Boolean(l.is_rapid_relay || rapidEdgeSet.has(`${s}|${t}`) || rapidEdgeSet.has(`${t}|${s}`))
+      l.temporalActive = isLinkActiveInTemporal(l)
+      if (l.temporalActive) {
+        activeNodeIds.add(s)
+        activeNodeIds.add(t)
+      }
+    })
+
     const focusNodes = new Set(highlightIds)
-    const dimNode = d => focusNodes.size > 0 && hasEvidence && !focusNodes.has(d.id)
+    const dimNode = d => {
+      if (focusNodes.size > 0 && hasEvidence && !focusNodes.has(d.id)) return true
+      if (isTemporalActive && activeNodeIds.size > 0 && !activeNodeIds.has(d.id)) return true
+      return false
+    }
 
     // Edges
     const link = g.append('g')
       .selectAll('line')
       .data(links)
       .join('line')
-      .attr('stroke', d => d.evidence ? EVIDENCE_COLOR : d.is_suspicious ? '#ef4444' : (EDGE_COLORS[d.type] || EDGE_COLORS.default))
-      .attr('stroke-width', d => d.evidence ? 3.5 : d.is_suspicious ? 2 : 1)
-      .attr('stroke-opacity', d => d.evidence ? 1 : hasEvidence ? 0.12 : d.is_suspicious ? 0.8 : 0.4)
-      .attr('filter', d => d.evidence ? 'url(#glow)' : null)
-      .attr('marker-end', d => d.type === 'TRANSACTED_WITH'
-        ? (d.is_suspicious ? 'url(#arrow-suspicious)' : 'url(#arrow)')
-        : null)
+      .attr('stroke', d => {
+        if (d.evidence) return EVIDENCE_COLOR
+        if (isTemporalActive) {
+          if (d.temporalActive) {
+            return d.isRapid ? '#f59e0b' : '#38bdf8'
+          }
+          return '#1e293b'
+        }
+        return d.is_suspicious ? '#ef4444' : (EDGE_COLORS[d.type] || EDGE_COLORS.default)
+      })
+      .attr('stroke-width', d => {
+        if (d.evidence) return 3.5
+        if (isTemporalActive) {
+          if (d.temporalActive) return d.isRapid ? 4 : 2.5
+          return 1
+        }
+        return d.is_suspicious ? 2 : 1
+      })
+      .attr('stroke-opacity', d => {
+        if (d.evidence) return 1
+        if (isTemporalActive) {
+          return d.temporalActive ? (d.isRapid ? 1 : 0.85) : 0.08
+        }
+        return hasEvidence ? 0.12 : d.is_suspicious ? 0.8 : 0.4
+      })
+      .attr('stroke-dasharray', d => (isTemporalActive && d.temporalActive && d.isRapid) ? '6, 4' : null)
+      .style('animation', d => (isTemporalActive && d.temporalActive && d.isRapid) ? 'dash-flow 1.2s linear infinite' : null)
+      .attr('filter', d => (d.evidence || (isTemporalActive && d.temporalActive && d.isRapid)) ? 'url(#glow)' : null)
+      .attr('marker-end', d => {
+        if (d.type !== 'TRANSACTED_WITH') return null
+        if (isTemporalActive && d.temporalActive && d.isRapid) return 'url(#arrow-rapid)'
+        return d.is_suspicious ? 'url(#arrow-suspicious)' : 'url(#arrow)'
+      })
+      .attr('cursor', 'pointer')
+      .on('mouseenter', (event, d) => {
+        const [x, y] = d3.pointer(event, el)
+        setEdgeTooltip({ edge: d, x, y })
+      })
+      .on('mouseleave', () => setEdgeTooltip(null))
 
     // Node groups
     const node = g.append('g')
@@ -160,7 +252,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
       .data(nodes)
       .join('g')
       .attr('cursor', 'pointer')
-      .attr('opacity', d => dimNode(d) ? 0.3 : 1)
+      .attr('opacity', d => dimNode(d) ? 0.22 : 1)
       .call(
         d3.drag()
           .on('start', (event, d) => {
@@ -178,14 +270,19 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
     node.append('circle')
       .attr('r', d => getNodeRadius(d))
       .attr('fill', d => getNodeColor(d))
-      .attr('fill-opacity', 0.85)
+      .attr('fill-opacity', d => (isTemporalActive && !activeNodeIds.has(d.id)) ? 0.35 : 0.85)
       .attr('stroke', d => {
         if (highlightIds.includes(d.id)) return hasEvidence ? EVIDENCE_COLOR : '#fff'
+        if (isTemporalActive && activeNodeIds.has(d.id)) return '#f59e0b'
         if (d.is_suspicious) return '#ef4444'
         return 'rgba(255,255,255,0.15)'
       })
-      .attr('stroke-width', d => highlightIds.includes(d.id) ? 3 : 1.5)
-      .attr('filter', d => (d.is_suspicious || highlightIds.includes(d.id)) ? 'url(#glow)' : null)
+      .attr('stroke-width', d => {
+        if (highlightIds.includes(d.id)) return 3
+        if (isTemporalActive && activeNodeIds.has(d.id)) return 3
+        return 1.5
+      })
+      .attr('filter', d => (d.is_suspicious || highlightIds.includes(d.id) || (isTemporalActive && activeNodeIds.has(d.id))) ? 'url(#glow)' : null)
 
     // Suspicious ring pulse overlay
     node.filter(d => d.is_suspicious)
@@ -207,7 +304,10 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
       .attr('dy', d => getNodeRadius(d) + 13)
       .attr('font-size', '10px')
       .attr('font-family', 'Inter, sans-serif')
-      .attr('fill', d => d.is_suspicious ? '#fca5a5' : '#94a3b8')
+      .attr('fill', d => {
+        if (isTemporalActive && activeNodeIds.has(d.id)) return '#fde68a'
+        return d.is_suspicious ? '#fca5a5' : '#94a3b8'
+      })
       .attr('pointer-events', 'none')
 
     // Interaction
@@ -236,7 +336,7 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
     })
 
     return () => sim.stop()
-  }, [graphData, highlightIds, highlightEdges, onNodeClick])
+  }, [graphData, highlightIds, highlightEdges, onNodeClick, temporalFilter])
 
   useEffect(() => {
     const cleanup = renderGraph()
@@ -298,6 +398,53 @@ export default function GraphCanvas({ graphData, onNodeClick, highlightIds = [],
           {tooltip.node.ring_id && (
             <div style={{ color: 'var(--risk-high)', fontSize: 11, marginTop: 2 }}>
               Ring: {tooltip.node.ring_id}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Edge Tooltip */}
+      {edgeTooltip && (
+        <div
+          className="graph-tooltip"
+          style={{
+            left: Math.min(edgeTooltip.x + 16, window.innerWidth - 240),
+            top: edgeTooltip.y - 8,
+            borderColor: edgeTooltip.edge.isRapid ? 'var(--warning)' : 'var(--border-bright)',
+          }}
+        >
+          <div className="tooltip-id" style={{ color: edgeTooltip.edge.isRapid ? 'var(--warning)' : 'var(--accent-cyan)' }}>
+            {edgeTooltip.edge.isRapid ? '⚡ RAPID MULE RELAY' : 'TRANSACTION'}
+          </div>
+          <div className="tooltip-name">
+            ${Number(edgeTooltip.edge.amount || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </div>
+          <div className="tooltip-row">
+            <span>Route</span>
+            <span style={{ fontSize: 11 }}>{(edgeTooltip.edge.source?.id || edgeTooltip.edge.source)} → {(edgeTooltip.edge.target?.id || edgeTooltip.edge.target)}</span>
+          </div>
+          {edgeTooltip.edge.timestamp && (
+            <div className="tooltip-row">
+              <span>Timestamp</span>
+              <span style={{ fontSize: 10 }}>{new Date(edgeTooltip.edge.timestamp).toLocaleString()}</span>
+            </div>
+          )}
+          {edgeTooltip.edge.channel && (
+            <div className="tooltip-row">
+              <span>Channel</span>
+              <span style={{ textTransform: 'uppercase' }}>{edgeTooltip.edge.channel}</span>
+            </div>
+          )}
+          {edgeTooltip.edge.turnaround_str && (
+            <div className="tooltip-row" style={{ color: 'var(--warning)', fontWeight: 600 }}>
+              <span>Turnaround</span>
+              <span>⚡ {edgeTooltip.edge.turnaround_str}</span>
+            </div>
+          )}
+          {edgeTooltip.edge.velocity_usd_per_min && (
+            <div className="tooltip-row" style={{ color: 'var(--warning)' }}>
+              <span>Velocity</span>
+              <span>${edgeTooltip.edge.velocity_usd_per_min}/min</span>
             </div>
           )}
         </div>

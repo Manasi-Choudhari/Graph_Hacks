@@ -60,6 +60,7 @@ AGENT_ROLES = {
             "rank_key_accounts",
             "explain_connection",
             "compute_risk_score",
+            "analyze_temporal_velocity",
         },
     },
     "compliance": {
@@ -92,6 +93,7 @@ Your role:
 - Detect fraud rings using Weakly Connected Components (algo.WCC) and multi-hop Cypher traversals (1-4 hops).
 - Quantify layering volume using max flow (algo.maxFlow) and identify critical broker accounts (algo.betweenness, algo.pageRank).
 - Uncover shortest evidence paths between suspects (algo.SPpaths).
+- Analyze money velocity over sliding time windows (under 30 minutes) using `analyze_temporal_velocity` to catch rapid mule pass-through relays.
 - Focus on concrete graph metrics: exact dollar amounts, intermediary hop counts, structuring patterns ($9,000–$9,999), and shared digital fingerprints.
 - Provide objective forensic proof for the Compliance team.
 """
@@ -467,6 +469,7 @@ You operate in a structured 3-phase investigation pipeline. Work through each ph
 - Compute max flow to quantify total layering volume (compute_max_flow).
 - Identify broker accounts by centrality (rank_key_accounts with betweenness/pagerank).
 - Find shortest evidence paths between suspects (explain_connection).
+- Analyze money velocity & rapid mule pass-throughs under 30 minutes (analyze_temporal_velocity).
 - Report exact dollar amounts, hop counts, and structuring signals ($9,000–$9,999).
 
 ━━━ PHASE 3: COMPLIANCE SUMMARY ━━━
@@ -494,6 +497,7 @@ SINGLE_AGENT_TOOLS = {
     "compute_max_flow",
     "rank_key_accounts",
     "explain_connection",
+    "analyze_temporal_velocity",
     # Compliance / action tools
     "propose_action",
     "list_actions",
@@ -510,7 +514,7 @@ _SINGLE_AGENT_ROLE_INFO = {
 
 _PHASE_EVENTS = [
     {"phase": 1, "label": "🛡️ Phase 1 — Triage & Risk Assessment", "message": "Scanning alerts and computing risk scores…"},
-    {"phase": 2, "label": "🔬 Phase 2 — Deep Graph Forensics",      "message": "Running WCC, max flow, betweenness, and evidence paths…"},
+    {"phase": 2, "label": "🔬 Phase 2 — Deep Graph Forensics",      "message": "Running WCC, max flow, betweenness, velocity, and evidence paths…"},
     {"phase": 3, "label": "📋 Phase 3 — Compliance & SAR Narrative", "message": "Evaluating regulatory obligations and drafting SAR…"},
 ]
 
@@ -565,7 +569,7 @@ async def run_single_agent(
         # Detect phase transitions based on status message keywords
         if ev.get("type") == "status":
             msg = ev.get("message", "").lower()
-            if phase_tracker["current"] == 1 and any(k in msg for k in ("forensic", "wcc", "flow", "ring", "community", "betweenness", "pagerank")):
+            if phase_tracker["current"] == 1 and any(k in msg for k in ("forensic", "wcc", "flow", "ring", "community", "betweenness", "pagerank", "velocity", "temporal")):
                 phase_tracker["current"] = 2
                 await on_event({
                     "type": "single_agent_phase",
@@ -592,6 +596,7 @@ async def run_single_agent(
             if phase_tracker["current"] == 1 and tool in {
                 "detect_fraud_communities", "find_fraud_rings", "trace_money_flow",
                 "compute_max_flow", "rank_key_accounts", "explain_connection",
+                "analyze_temporal_velocity",
             }:
                 phase_tracker["current"] = 2
                 await on_event({

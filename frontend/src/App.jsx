@@ -7,6 +7,7 @@ import {
   getSubgraph, streamChat, streamSingleAgent, streamSwarm,
   seedDatabase, searchAccounts, getMemory,
   getActions, reviewAction, getCommunities,
+  getTemporalVelocity, getTemporalTimeline,
   ingestFile, ingestSample, getTemplateUrl
 } from './api.js'
 
@@ -909,6 +910,232 @@ function IngestModal({ isOpen, onClose, onIngested }) {
   )
 }
 
+/* ── TemporalReplayBar ──────────────────────────────────────────────── */
+function TemporalReplayBar({
+  timeline,
+  velocityData,
+  temporalFilter,
+  onChangeFilter,
+  onMuleClick,
+  onClose,
+}) {
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [speed, setSpeed] = useState(1)
+
+  const minMs = timeline?.min_timestamp_ms || (timeline?.min_timestamp ? new Date(timeline.min_timestamp).getTime() : Date.now() - 24 * 3600 * 1000)
+  const maxMs = timeline?.max_timestamp_ms || (timeline?.max_timestamp ? new Date(timeline.max_timestamp).getTime() : Date.now())
+  const currentMs = Number(temporalFilter?.currentTimeMs) || maxMs
+  const windowMinutes = temporalFilter?.windowMinutes ?? 30
+  const rapidOnly = Boolean(temporalFilter?.rapidOnly)
+
+  // Auto-advance playback loop
+  useEffect(() => {
+    if (!isPlaying) return
+    const interval = setInterval(() => {
+      onChangeFilter(prev => {
+        const step = Math.max(60000, Math.round((maxMs - minMs) / 80)) * speed
+        let next = (Number(prev.currentTimeMs) || minMs) + step
+        if (next > maxMs) next = minMs
+        return { ...prev, currentTimeMs: next }
+      })
+    }, 250)
+    return () => clearInterval(interval)
+  }, [isPlaying, speed, minMs, maxMs, onChangeFilter])
+
+  const formatTime = (ms) => {
+    try {
+      const d = new Date(ms)
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ' ' +
+        d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    } catch {
+      return ''
+    }
+  }
+
+  const maxBinCount = Math.max(1, ...(timeline?.histogram_bins?.map(b => b.count) || [1]))
+
+  return (
+    <div className="temporal-dock">
+      {/* Header Row */}
+      <div className="temporal-header">
+        <div className="temporal-title">
+          <span style={{ fontSize: 16 }}>🕒</span>
+          <span>Temporal Replay &amp; Money Velocity</span>
+          <span className="temporal-badge live">
+            {windowMinutes === 0 ? 'ALL TIME' : `SLIDING ${windowMinutes}M`}
+          </span>
+          {velocityData?.rapid_relay_count > 0 && (
+            <span className="temporal-badge rapid">
+              ⚡ {velocityData.rapid_relay_count} Rapid Relays (≤{velocityData.window_minutes || 30}m)
+            </span>
+          )}
+        </div>
+
+        <div className="temporal-controls-row">
+          {/* Rapid Mule Filter Toggle */}
+          <button
+            id="temporal-rapid-filter-btn"
+            className={`temporal-btn temporal-btn-rapid ${rapidOnly ? 'active' : ''}`}
+            onClick={() => onChangeFilter(prev => ({ ...prev, rapidOnly: !prev.rapidOnly }))}
+            title="Filter graph to ONLY rapid mule pass-throughs under 30 minutes"
+          >
+            ⚡ {rapidOnly ? 'Showing Rapid Mules Only' : 'Rapid Mule Filter (≤30m)'}
+          </button>
+
+          {/* Window Selectors */}
+          {[15, 30, 60, 360, 1440, 0].map(mins => (
+            <button
+              key={mins}
+              className={`temporal-btn ${windowMinutes === mins ? 'active' : ''}`}
+              onClick={() => onChangeFilter(prev => ({ ...prev, windowMinutes: mins }))}
+            >
+              {mins === 0 ? 'All' : mins === 60 ? '1h' : mins === 360 ? '6h' : mins === 1440 ? '24h' : `${mins}m`}
+            </button>
+          ))}
+
+          {/* Close Dock */}
+          <button
+            className="temporal-btn"
+            style={{ color: 'var(--text-muted)' }}
+            onClick={onClose}
+            title="Close Temporal Replay"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {/* Histogram Bar Chart */}
+      {timeline?.histogram_bins?.length > 0 && (
+        <div className="temporal-histogram" title="Click any time bin to scrub timeline">
+          {timeline.histogram_bins.map((bin, idx) => {
+            const heightPct = Math.max(15, Math.round((bin.count / maxBinCount) * 100))
+            const isActive = currentMs >= (bin.start_ms || 0) && currentMs <= (bin.end_ms || Infinity)
+            const hasRapid = Boolean((bin.rapid_relays && bin.rapid_relays > 0) || (bin.rapid_count && bin.rapid_count > 0))
+            return (
+              <div
+                key={idx}
+                className={`temporal-hist-bar ${hasRapid ? 'has-rapid' : ''} ${isActive ? 'active-bin' : ''}`}
+                style={{ height: `${heightPct}%` }}
+                onClick={() => onChangeFilter(prev => ({ ...prev, currentTimeMs: bin.end_ms || bin.start_ms || currentMs }))}
+                title={`${bin.start_time ? bin.start_time.slice(11, 16) : ''} - ${bin.end_time ? bin.end_time.slice(11, 16) : ''}: ${bin.count || 0} txs ($${Math.round(bin.volume || 0).toLocaleString()})${hasRapid ? ` · ⚡ ${bin.rapid_relays || bin.rapid_count} rapid relays` : ''}`}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {/* Scrubber & Playback Controls */}
+      <div className="temporal-scrubber-track">
+        <input
+          type="range"
+          className={`temporal-slider ${rapidOnly ? 'rapid-mode' : ''}`}
+          min={minMs}
+          max={maxMs}
+          value={currentMs}
+          onChange={(e) => onChangeFilter(prev => ({ ...prev, currentTimeMs: Number(e.target.value) }))}
+        />
+
+        <div className="temporal-hud">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {/* Play/Pause */}
+            <button
+              id="temporal-play-pause-btn"
+              className="temporal-btn"
+              onClick={() => setIsPlaying(p => !p)}
+              style={{ fontWeight: 600, padding: '3px 9px' }}
+            >
+              {isPlaying ? '⏸ Pause' : '▶ Play Replay'}
+            </button>
+
+            {/* Step back/forward */}
+            <button
+              className="temporal-btn"
+              onClick={() => onChangeFilter(prev => ({ ...prev, currentTimeMs: Math.max(minMs, currentMs - 15 * 60000) }))}
+              title="Step back 15 minutes"
+            >
+              -15m
+            </button>
+            <button
+              className="temporal-btn"
+              onClick={() => onChangeFilter(prev => ({ ...prev, currentTimeMs: Math.min(maxMs, currentMs + 15 * 60000) }))}
+              title="Step forward 15 minutes"
+            >
+              +15m
+            </button>
+
+            {/* Speed toggle */}
+            {[1, 2, 5].map(s => (
+              <button
+                key={s}
+                className={`temporal-btn ${speed === s ? 'active' : ''}`}
+                style={{ padding: '2px 6px', fontSize: 10 }}
+                onClick={() => setSpeed(s)}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span>
+              Window: <span style={{ color: '#fff', fontWeight: 600 }}>{windowMinutes === 0 ? 'Full History' : formatTime(currentMs - windowMinutes * 60000) + ' → ' + formatTime(currentMs)}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Velocity Telemetry & Top Mules */}
+      {velocityData && (
+        <div className="temporal-telemetry">
+          <div className="temporal-telemetry-item">
+            <span className="label">⚡ Rapid Mules:</span>
+            <span className="val">{velocityData.rapid_mule_count || velocityData.top_velocity_mules?.length || 0}</span>
+          </div>
+          <div className="temporal-telemetry-item">
+            <span className="label">Turnaround:</span>
+            <span className="val">{velocityData.fastest_turnaround_str || velocityData.fastest_turnaround || '—'}</span>
+          </div>
+          <div className="temporal-telemetry-item">
+            <span className="label">Max Velocity:</span>
+            <span className="val">${Math.round(velocityData.max_velocity_usd_per_min || 0).toLocaleString()}/min</span>
+          </div>
+          <div className="temporal-telemetry-item">
+            <span className="label">Rapid Flow:</span>
+            <span className="val">${Math.round(velocityData.total_rapid_volume || 0).toLocaleString()}</span>
+          </div>
+
+          {/* Quick Click Mules */}
+          {velocityData.top_velocity_mules?.length > 0 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', overflowX: 'auto' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase' }}>Focus Mule:</span>
+              {velocityData.top_velocity_mules.slice(0, 4).map(m => {
+                const muleId = m.id || m.mule_id || ''
+                const muleName = m.name || m.mule_name || muleId || 'Mule'
+                const firstName = String(muleName).split(' ')[0]
+                const turnaround = m.fastest_turnaround || (m.avg_turnaround_minutes ? `${m.avg_turnaround_minutes}m` : '—')
+                const vel = m.max_velocity_usd_per_min || m.max_velocity || 0
+                return (
+                  <div
+                    key={muleId}
+                    className="temporal-mule-chip"
+                    onClick={() => onMuleClick?.(muleId)}
+                    title={`Click to focus on ${muleName}: ${turnaround} turnaround, $${Math.round(vel).toLocaleString()}/min velocity`}
+                  >
+                    <span>⚡</span>
+                    <strong>{firstName}</strong>
+                    <span style={{ opacity: 0.8, fontSize: 10 }}>({turnaround})</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── App ──────────────────────────────────────────────────────────────── */
 export default function App() {
   const [sessionId, setSessionId] = useState(null)
@@ -925,6 +1152,67 @@ export default function App() {
   const [actions, setActions] = useState([])
   const [showIngestModal, setShowIngestModal] = useState(false)
   const [agentMode, setAgentMode] = useState('standard')  // 'standard' | 'single_agent' | 'swarm'
+
+  // Temporal Replay & Velocity Analysis States
+  const [temporalActive, setTemporalActive] = useState(false)
+  const [temporalTimeline, setTemporalTimeline] = useState(null)
+  const [temporalVelocity, setTemporalVelocity] = useState(null)
+  const [temporalFilter, setTemporalFilter] = useState({
+    active: false,
+    currentTimeMs: Date.now(),
+    windowMinutes: 30,
+    rapidOnly: false,
+    rapidEdges: [],
+  })
+
+  const loadTemporalData = useCallback(async (winMins = 30) => {
+    try {
+      const [tl, vel] = await Promise.all([
+        getTemporalTimeline(winMins).catch(() => null),
+        getTemporalVelocity({ window_minutes: winMins }).catch(() => null),
+      ])
+      if (tl) {
+        setTemporalTimeline(tl)
+        const computedMax = tl.max_timestamp_ms || (tl.max_timestamp ? new Date(tl.max_timestamp).getTime() : Date.now())
+        setTemporalFilter(prev => ({
+          ...prev,
+          currentTimeMs: prev.currentTimeMs && prev.currentTimeMs > 0 ? prev.currentTimeMs : computedMax,
+        }))
+      }
+      if (vel) {
+        setTemporalVelocity(vel)
+        const edges = vel.rapid_relays?.flatMap(r => [
+          `${r.source_account}|${r.mule_account}`,
+          `${r.mule_account}|${r.target_account}`,
+        ]) || []
+        setTemporalFilter(prev => ({
+          ...prev,
+          rapidEdges: edges,
+        }))
+      }
+    } catch (err) {
+      console.error('Failed to load temporal data:', err)
+    }
+  }, [])
+
+  const toggleTemporal = async () => {
+    const next = !temporalActive
+    setTemporalActive(next)
+    setTemporalFilter(prev => ({ ...prev, active: next }))
+    if (next && !temporalTimeline) {
+      await loadTemporalData(temporalFilter.windowMinutes || 30)
+    }
+    setActiveTab('graph')
+  }
+
+  const handleMuleClick = async (muleId) => {
+    try {
+      const subgraph = await getSubgraph(muleId, 2)
+      if (subgraph?.nodes?.length) {
+        showGraph({ nodes: subgraph.nodes, edges: subgraph.edges }, [muleId])
+      }
+    } catch (e) { console.error(e) }
+  }
 
   const handleIngestSuccess = async (res) => {
     await handleRefresh()
@@ -983,6 +1271,7 @@ export default function App() {
         setAlerts(al?.alerts || [])
         if (gd?.nodes?.length) setGraphData(gd)
         refreshActions()
+        loadTemporalData()
       } catch (e) {
         setDbStatus('error')
         console.error('Init error:', e)
@@ -991,7 +1280,7 @@ export default function App() {
       }
     }
     init()
-  }, [refreshActions])
+  }, [refreshActions, loadTemporalData])
 
   const handleSeed = async () => {
     setSeeding(true)
@@ -1004,6 +1293,7 @@ export default function App() {
       setAlerts(al?.alerts || [])
       if (gd?.nodes?.length) showGraph(gd)
       refreshActions()
+      loadTemporalData()
       setDbStatus('connected')
     } catch (e) {
       alert('Seeding failed: ' + e.message)
@@ -1040,6 +1330,7 @@ export default function App() {
     setAlerts(al?.alerts || [])
     if (gd?.nodes?.length) showGraph(gd)
     refreshActions()
+    loadTemporalData()
   }
 
   const TABS = [
@@ -1098,6 +1389,34 @@ export default function App() {
             Detect Rings
           </button>
           <button
+            id="temporal-replay-btn"
+            className={`btn btn-ghost ${temporalActive ? 'active' : ''}`}
+            style={{
+              borderColor: temporalActive ? '#f59e0b' : 'rgba(245, 158, 11, 0.4)',
+              color: '#f59e0b',
+              background: temporalActive ? 'rgba(245, 158, 11, 0.18)' : 'transparent',
+              boxShadow: temporalActive ? '0 0 14px rgba(245, 158, 11, 0.35)' : 'none',
+              fontWeight: 600,
+            }}
+            onClick={toggleTemporal}
+            title="Open Temporal Replay & Money Velocity scrubber"
+          >
+            <span>🕒 Time Replay</span>
+            {temporalVelocity?.rapid_relay_count > 0 && (
+              <span style={{
+                background: '#f59e0b',
+                color: '#090d16',
+                fontSize: 10,
+                padding: '1px 5px',
+                borderRadius: 10,
+                fontWeight: 700,
+                marginLeft: 3,
+              }}>
+                {temporalVelocity.rapid_relay_count}⚡
+              </span>
+            )}
+          </button>
+          <button
             className="btn btn-ghost"
             style={{ borderColor: 'rgba(168,85,247,0.4)', color: '#c084fc' }}
             onClick={() => setShowIngestModal(true)}
@@ -1148,15 +1467,31 @@ export default function App() {
           )}
 
           {!loading && activeTab === 'graph' && (
-            <div className="fade-in" style={{ height: '100%' }}>
+            <div className="fade-in" style={{ height: '100%', position: 'relative' }}>
               {graphData ? (
-                <GraphCanvas
-                  graphData={graphData}
-                  onNodeClick={handleNodeClick}
-                  highlightIds={highlightIds}
-                  highlightEdges={highlightEdges}
-                  caption={caption}
-                />
+                <>
+                  <GraphCanvas
+                    graphData={graphData}
+                    onNodeClick={handleNodeClick}
+                    highlightIds={highlightIds}
+                    highlightEdges={highlightEdges}
+                    caption={caption}
+                    temporalFilter={temporalActive ? temporalFilter : null}
+                  />
+                  {temporalActive && (
+                    <TemporalReplayBar
+                      timeline={temporalTimeline}
+                      velocityData={temporalVelocity}
+                      temporalFilter={temporalFilter}
+                      onChangeFilter={setTemporalFilter}
+                      onMuleClick={handleMuleClick}
+                      onClose={() => {
+                        setTemporalActive(false)
+                        setTemporalFilter(prev => ({ ...prev, active: false }))
+                      }}
+                    />
+                  )}
+                </>
               ) : (
                 <div className="empty-state">
                   <div className="empty-icon">🌐</div>

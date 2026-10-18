@@ -84,7 +84,7 @@ def find_fraud_rings(account_id: str | None = None, max_hops: int = 4) -> dict:
          coalesce(src.id, src.fingerprint, src.address) as src_key,
          coalesce(dst.id, dst.fingerprint, dst.address) as dst_key
     WHERE src_key IN $keys AND dst_key IN $keys
-    RETURN DISTINCT src_key, dst_key, type(rel), rel.amount, rel.is_suspicious
+    RETURN DISTINCT src_key, dst_key, type(rel), rel.amount, rel.is_suspicious, rel.timestamp, rel.channel, rel.pattern
     LIMIT 200
     """
     edge_result = g.query(edge_query, {"keys": list(seen_nodes)})
@@ -101,6 +101,9 @@ def find_fraud_rings(account_id: str | None = None, max_hops: int = 4) -> dict:
                     "type": row[2] or "CONNECTED",
                     "amount": row[3],
                     "is_suspicious": row[4] or False,
+                    "timestamp": row[5] or "",
+                    "channel": row[6] or "",
+                    "pattern": row[7] or "",
                 }
             )
 
@@ -1091,4 +1094,349 @@ def compute_max_flow(source_id: str, target_id: str) -> dict:
         "flow_edges": [{"source": s, "target": d, "flow": f} for s, d, f in flow_edges][:30],
         "edges": [{"source": s, "target": d, "type": "TRANSACTED_WITH", "amount": f, "is_suspicious": True} for s, d, f in flow_edges],
         "cypher": " ".join(query.split()).replace("$src", f"'{source_id}'").replace("$dst", f"'{target_id}'"),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOOL 16 – Temporal Velocity & Rapid Pass-Through Analytics
+# ─────────────────────────────────────────────────────────────────────────────
+def analyze_temporal_velocity(
+    account_id: str | None = None,
+    window_minutes: int = 30,
+    min_amount: float = 500.0,
+    limit: int = 50,
+) -> dict:
+    """
+    Analyze transaction velocity over sliding time windows to detect rapid money
+    mule pass-through relays (e.g. money in and out within 30 minutes with high retention).
+    Identifies velocity bursts, turnaround times, and layering relay chains.
+    """
+    g = get_graph()
+    window_minutes = max(1, min(int(window_minutes) if window_minutes else 30, 1440))
+    min_amount = max(0.0, float(min_amount) if min_amount is not None else 500.0)
+
+    where_clause = "WHERE src.id <> dst.id AND t1.timestamp IS NOT NULL AND t2.timestamp IS NOT NULL AND t1.amount >= $min_amount AND t2.amount >= $min_amount"
+    params = {"min_amount": min_amount}
+
+    if account_id and str(account_id).strip().upper() not in ("ALL", "NONE", "*", ""):
+        where_clause += " AND (mule.id = $acc_id OR src.id = $acc_id OR dst.id = $acc_id)"
+        params["acc_id"] = account_id.strip()
+
+    query = f"""
+    MATCH (src:Account)-[t1:TRANSACTED_WITH]->(mule:Account)-[t2:TRANSACTED_WITH]->(dst:Account)
+    {where_clause}
+    RETURN 
+        src.id, coalesce(src.name, src.id), labels(src)[0], src.entity_type, src.risk_score,
+        mule.id, coalesce(mule.name, mule.id), labels(mule)[0], mule.entity_type, mule.risk_score, mule.ring_id,
+        dst.id, coalesce(dst.name, dst.id), labels(dst)[0], dst.entity_type, dst.risk_score,
+        t1.id, t1.amount, t1.currency, t1.timestamp, t1.channel, t1.pattern,
+        t2.id, t2.amount, t2.currency, t2.timestamp, t2.channel, t2.pattern
+    LIMIT 1000
+    """
+    res = g.query(query, params)
+
+    rapid_relays = []
+    seen_relays = set()
+    node_map = {}
+    mule_stats = {}
+
+    for row in res.result_set:
+        (
+            src_id, src_name, src_label, src_type, src_risk,
+            mule_id, mule_name, mule_label, mule_type, mule_risk, ring_id,
+            dst_id, dst_name, dst_label, dst_type, dst_risk,
+            t1_id, t1_amt, t1_curr, t1_ts, t1_ch, t1_pat,
+            t2_id, t2_amt, t2_curr, t2_ts, t2_ch, t2_pat,
+        ) = row
+
+        if not t1_ts or not t2_ts:
+            continue
+
+        try:
+            d1 = datetime.fromisoformat(str(t1_ts).replace("Z", ""))
+            d2 = datetime.fromisoformat(str(t2_ts).replace("Z", ""))
+        except Exception:
+            continue
+
+        delta_sec = (d2 - d1).total_seconds()
+        if delta_sec < 0 or delta_sec > (window_minutes * 60):
+            continue
+
+        relay_key = f"{mule_id}|{t1_id}|{t2_id}"
+        if relay_key in seen_relays:
+            continue
+        seen_relays.add(relay_key)
+
+        delta_min = round(delta_sec / 60.0, 2)
+        retention = round((t2_amt / t1_amt * 100), 1) if t1_amt else 0
+        fee = round(t1_amt - t2_amt, 2)
+        velocity = round(t2_amt / max(delta_min, 0.5), 2)
+
+        if delta_min <= 15 and 80.0 <= retention <= 110.0:
+            severity = "CRITICAL"
+        elif delta_min <= 30:
+            severity = "HIGH"
+        else:
+            severity = "MEDIUM"
+
+        relay_item = {
+            "mule_id": mule_id,
+            "mule_name": mule_name,
+            "mule_type": mule_type or "mule",
+            "mule_risk": mule_risk or 0,
+            "ring_id": ring_id,
+            "source_id": src_id,
+            "source_name": src_name,
+            "target_id": dst_id,
+            "target_name": dst_name,
+            "inflow_id": t1_id or f"TX_{src_id[:4]}_{mule_id[:4]}",
+            "inflow_amount": t1_amt,
+            "inflow_time": t1_ts,
+            "inflow_channel": t1_ch or "wire",
+            "outflow_id": t2_id or f"TX_{mule_id[:4]}_{dst_id[:4]}",
+            "outflow_amount": t2_amt,
+            "outflow_time": t2_ts,
+            "outflow_channel": t2_ch or "wire",
+            "delta_minutes": delta_min,
+            "turnaround_str": f"{int(delta_min)}m {int(delta_sec % 60)}s",
+            "retention_pct": retention,
+            "mule_retained_fee": fee,
+            "velocity_usd_per_min": velocity,
+            "severity": severity,
+        }
+        rapid_relays.append(relay_item)
+
+        if mule_id not in mule_stats:
+            mule_stats[mule_id] = {
+                "id": mule_id,
+                "name": mule_name,
+                "relay_count": 0,
+                "total_volume": 0.0,
+                "deltas": [],
+                "velocities": [],
+                "ring_id": ring_id,
+            }
+        mule_stats[mule_id]["relay_count"] += 1
+        mule_stats[mule_id]["total_volume"] += t2_amt
+        mule_stats[mule_id]["deltas"].append(delta_min)
+        mule_stats[mule_id]["velocities"].append(velocity)
+
+        if src_id not in node_map:
+            node_map[src_id] = _node_dict(src_id, src_label or "Account", src_name, src_risk, True, entity_type=src_type)
+        if mule_id not in node_map:
+            node_map[mule_id] = _node_dict(mule_id, mule_label or "Account", mule_name, mule_risk, True, ring_id=ring_id, entity_type=mule_type)
+        if dst_id not in node_map:
+            node_map[dst_id] = _node_dict(dst_id, dst_label or "Account", dst_name, dst_risk, False, entity_type=dst_type)
+
+    rapid_relays.sort(key=lambda x: x["delta_minutes"])
+    rapid_relays = rapid_relays[:limit]
+
+    ranked_mules = []
+    for mid, mdata in mule_stats.items():
+        avg_delta = round(sum(mdata["deltas"]) / len(mdata["deltas"]), 2)
+        min_delta = min(mdata["deltas"]) if mdata["deltas"] else 0.0
+        max_vel = round(max(mdata["velocities"]), 2)
+        m_secs = int(round(min_delta * 60))
+        fastest_str = f"{m_secs // 60}m {m_secs % 60}s" if m_secs >= 60 else f"{m_secs}s"
+        ranked_mules.append({
+            "id": mid,
+            "mule_id": mid,
+            "name": mdata["name"],
+            "mule_name": mdata["name"],
+            "relay_count": mdata["relay_count"],
+            "total_relayed_usd": round(mdata["total_volume"], 2),
+            "avg_turnaround_minutes": avg_delta,
+            "fastest_turnaround": fastest_str,
+            "max_velocity_usd_per_min": max_vel,
+            "ring_id": mdata["ring_id"],
+        })
+    ranked_mules.sort(key=lambda x: (x["relay_count"], -x["avg_turnaround_minutes"]), reverse=True)
+
+    edges = []
+    seen_edge_keys = set()
+    for r in rapid_relays:
+        e1_key = f"{r['source_id']}|{r['mule_id']}"
+        if e1_key not in seen_edge_keys:
+            seen_edge_keys.add(e1_key)
+            edges.append({
+                "source": r["source_id"],
+                "target": r["mule_id"],
+                "type": "TRANSACTED_WITH",
+                "amount": r["inflow_amount"],
+                "timestamp": r["inflow_time"],
+                "is_suspicious": True,
+                "is_rapid_relay": True,
+                "channel": r["inflow_channel"],
+            })
+        e2_key = f"{r['mule_id']}|{r['target_id']}"
+        if e2_key not in seen_edge_keys:
+            seen_edge_keys.add(e2_key)
+            edges.append({
+                "source": r["mule_id"],
+                "target": r["target_id"],
+                "type": "TRANSACTED_WITH",
+                "amount": r["outflow_amount"],
+                "timestamp": r["outflow_time"],
+                "is_suspicious": True,
+                "is_rapid_relay": True,
+                "delta_minutes": r["delta_minutes"],
+                "turnaround_str": r["turnaround_str"],
+                "velocity_usd_per_min": r["velocity_usd_per_min"],
+                "channel": r["outflow_channel"],
+            })
+
+    total_rapid_volume = round(sum(r["outflow_amount"] for r in rapid_relays), 2)
+    fastest = rapid_relays[0]["turnaround_str"] if rapid_relays else "None"
+    avg_turnaround = (
+        f"{round(sum(r['delta_minutes'] for r in rapid_relays) / len(rapid_relays), 1)} mins"
+        if rapid_relays else "0 mins"
+    )
+
+    summary_text = (
+        f"Detected {len(rapid_relays)} rapid pass-through relay(s) under {window_minutes} minutes "
+        f"across {len(ranked_mules)} mule account(s), totaling ${total_rapid_volume:,.2f}. "
+        f"Fastest turnaround was {fastest} with an average of {avg_turnaround}. "
+        f"High velocity pass-through with minimal fund retention is a primary indicator of automated money laundering."
+    )
+
+    max_vel_overall = max((m["max_velocity_usd_per_min"] for m in ranked_mules), default=0.0)
+
+    return {
+        "tool": "analyze_temporal_velocity",
+        "window_minutes": window_minutes,
+        "rapid_relay_count": len(rapid_relays),
+        "rapid_mule_count": len(ranked_mules),
+        "total_rapid_volume": total_rapid_volume,
+        "fastest_turnaround": fastest,
+        "fastest_turnaround_str": fastest,
+        "max_velocity_usd_per_min": max_vel_overall,
+        "avg_turnaround": avg_turnaround,
+        "rapid_relays": rapid_relays,
+        "top_velocity_mules": ranked_mules[:10],
+        "summary": summary_text,
+        "nodes": list(node_map.values()),
+        "edges": edges,
+    }
+
+
+def get_temporal_timeline(window_minutes: int = 30) -> dict:
+    """
+    Get all transactions sorted chronologically with temporal bins and velocity flags,
+    enabling time-slider scrubbing and animated replay on the knowledge graph.
+    """
+    g = get_graph()
+    query = """
+    MATCH (src:Account)-[t:TRANSACTED_WITH]->(dst:Account)
+    WHERE t.timestamp IS NOT NULL
+    RETURN 
+        src.id, coalesce(src.name, src.id), src.entity_type, src.risk_score,
+        dst.id, coalesce(dst.name, dst.id), dst.entity_type, dst.risk_score,
+        t.id, t.amount, t.currency, t.timestamp, t.channel, t.pattern, t.is_suspicious
+    ORDER BY t.timestamp ASC
+    LIMIT 1000
+    """
+    res = g.query(query)
+
+    txs = []
+    for row in res.result_set:
+        src_id, src_name, src_type, src_risk, dst_id, dst_name, dst_type, dst_risk, tx_id, amt, curr, ts, ch, pat, susp = row
+        txs.append({
+            "id": tx_id or f"{src_id}-{dst_id}",
+            "source": src_id,
+            "source_name": src_name,
+            "source_type": src_type,
+            "target": dst_id,
+            "target_name": dst_name,
+            "target_type": dst_type,
+            "amount": amt or 0.0,
+            "currency": curr or "USD",
+            "timestamp": str(ts),
+            "channel": ch or "wire",
+            "pattern": pat or "standard",
+            "is_suspicious": bool(susp),
+        })
+
+    if not txs:
+        return {
+            "min_timestamp": None,
+            "max_timestamp": None,
+            "total_transactions": 0,
+            "total_volume": 0.0,
+            "rapid_relay_count": 0,
+            "histogram_bins": [],
+            "transactions": [],
+        }
+
+    vel_res = analyze_temporal_velocity(window_minutes=window_minutes, limit=200)
+    rapid_tx_ids = set()
+    rapid_edge_map = {}
+    for r in vel_res.get("rapid_relays", []):
+        rapid_tx_ids.add(r["inflow_id"])
+        rapid_tx_ids.add(r["outflow_id"])
+        rapid_edge_map[f"{r['mule_id']}|{r['target_id']}"] = r
+
+    for tx in txs:
+        edge_key = f"{tx['source']}|{tx['target']}"
+        is_rapid = tx["id"] in rapid_tx_ids or edge_key in rapid_edge_map
+        tx["is_rapid_relay"] = is_rapid
+        if is_rapid and edge_key in rapid_edge_map:
+            tx["turnaround_str"] = rapid_edge_map[edge_key].get("turnaround_str")
+            tx["delta_minutes"] = rapid_edge_map[edge_key].get("delta_minutes")
+
+    min_ts = txs[0]["timestamp"]
+    max_ts = txs[-1]["timestamp"]
+
+    bins = []
+    t_start = 0.0
+    t_end = 0.0
+    try:
+        t_start = datetime.fromisoformat(min_ts.replace("Z", "")).timestamp()
+        t_end = datetime.fromisoformat(max_ts.replace("Z", "")).timestamp()
+        span = max(t_end - t_start, 1)
+        num_bins = 24
+        bin_width = span / num_bins
+
+        bin_data = [
+            {
+                "bin_index": i,
+                "start_time": datetime.fromtimestamp(t_start + i * bin_width).isoformat(),
+                "end_time": datetime.fromtimestamp(t_start + (i + 1) * bin_width).isoformat(),
+                "start_ms": int((t_start + i * bin_width) * 1000),
+                "end_ms": int((t_start + (i + 1) * bin_width) * 1000),
+                "count": 0,
+                "volume": 0.0,
+                "rapid_count": 0,
+                "rapid_relays": 0,
+            }
+            for i in range(num_bins)
+        ]
+
+        for tx in txs:
+            try:
+                t_tx = datetime.fromisoformat(tx["timestamp"].replace("Z", "")).timestamp()
+                idx = min(int((t_tx - t_start) / bin_width), num_bins - 1)
+                bin_data[idx]["count"] += 1
+                bin_data[idx]["volume"] = round(bin_data[idx]["volume"] + tx["amount"], 2)
+                if tx.get("is_rapid_relay"):
+                    bin_data[idx]["rapid_count"] += 1
+                    bin_data[idx]["rapid_relays"] += 1
+            except Exception:
+                pass
+        bins = bin_data
+    except Exception as e:
+        print(f"[WARN] Error computing timeline bins: {e}")
+
+    total_volume = round(sum(tx["amount"] for tx in txs), 2)
+
+    return {
+        "min_timestamp": min_ts,
+        "max_timestamp": max_ts,
+        "min_timestamp_ms": int(t_start * 1000),
+        "max_timestamp_ms": int(t_end * 1000),
+        "total_transactions": len(txs),
+        "total_volume": total_volume,
+        "rapid_relay_count": vel_res.get("rapid_relay_count", 0),
+        "histogram_bins": bins,
+        "transactions": txs,
+        "rapid_relays": vel_res.get("rapid_relays", [])[:20],
     }

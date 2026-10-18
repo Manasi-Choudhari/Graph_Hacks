@@ -152,8 +152,9 @@ SYSTEM_PROMPT = """You are FraudScope AI, an expert financial crime investigator
 - "Find all fraud rings" → detect_fraud_communities (label-free community detection). One account's ring → find_fraud_rings with account_id.
 - "Who are the key players / hubs / brokers" → rank_key_accounts (pagerank for collection hubs, betweenness for brokers).
 - "How is A connected to B" → explain_connection. "How much money moved from A to B / layering" → compute_max_flow.
+- "Rapid mule pass-through / temporal replay / money velocity under 30 min" → analyze_temporal_velocity (window_minutes=30).
 - Never call the same tool twice with the same arguments. Only call get_graph_overview for overview questions.
-- Signals that matter: structuring (amounts just under $10k), circular or layered flows, shared IPs/devices with suspicious accounts, centrality.
+- Signals that matter: structuring (amounts just under $10k), circular or layered flows, rapid pass-through relays under 30 minutes, shared IPs/devices with suspicious accounts, centrality.
 
 ## Taking action
 - When the evidence is strong (confirmed ring membership, structuring, layering, shared infrastructure with suspicious accounts), PROPOSE concrete actions with propose_action (freeze_account, open_case, escalate_alert, file_sar, or clear_account for false positives). Cite the evidence in `reason` and list related accounts in evidence_account_ids.
@@ -183,7 +184,30 @@ def _format_tool_result_for_llm(tool_name: str, result: Any) -> str:
         return json.dumps({"tool": tool_name, "error": str(result["error"])[:400]})
 
     slim: dict[str, Any]
-    if tool_name == "find_fraud_rings":
+    if tool_name == "analyze_temporal_velocity":
+        slim = {
+            "window_minutes": result.get("window_minutes"),
+            "rapid_relay_count": result.get("rapid_relay_count"),
+            "total_rapid_volume": result.get("total_rapid_volume"),
+            "fastest_turnaround": result.get("fastest_turnaround"),
+            "avg_turnaround": result.get("avg_turnaround"),
+            "summary": result.get("summary"),
+            "top_velocity_mules": result.get("top_velocity_mules", [])[:5],
+            "rapid_relays": [
+                {
+                    "mule": r.get("mule_name"),
+                    "from": r.get("source_name"),
+                    "to": r.get("target_name"),
+                    "in_amt": r.get("inflow_amount"),
+                    "out_amt": r.get("outflow_amount"),
+                    "turnaround": r.get("turnaround_str"),
+                    "retention": f"{r.get('retention_pct')}%",
+                    "severity": r.get("severity"),
+                }
+                for r in result.get("rapid_relays", [])[:6]
+            ],
+        }
+    elif tool_name == "find_fraud_rings":
         nodes = result.get("nodes", [])
         slim = {
             "account_id": result.get("account_id"),

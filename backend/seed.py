@@ -348,6 +348,7 @@ def seed_graph():
             )
 
     from tools import build_flow_projection
+    seed_rapid_pass_throughs(g)
     build_flow_projection()
 
     print("✅ FraudScope graph seeded successfully!")
@@ -358,6 +359,119 @@ def seed_graph():
     result = g.query("MATCH (n) RETURN labels(n) as label, count(n) as cnt")
     for row in result.result_set:
         print(f"   {row[0]}: {row[1]} nodes")
+
+
+def seed_rapid_pass_throughs(g=None) -> int:
+    """
+    Seed realistic rapid mule relay pass-through sequences (< 30 minutes)
+    for temporal velocity analysis and sliding window replay.
+    """
+    if g is None:
+        g = get_graph()
+
+    # Discover fraud rings
+    rings: dict = {}
+    res = g.query("MATCH (a:Account) WHERE a.ring_id IS NOT NULL RETURN a.ring_id, a.id, a.name, a.entity_type")
+    for row in res.result_set:
+        r_id, a_id, name, etype = row
+        if r_id not in rings:
+            rings[r_id] = {"shell": None, "mules": []}
+        if etype == "shell_company":
+            rings[r_id]["shell"] = a_id
+        else:
+            rings[r_id]["mules"].append(a_id)
+
+    # Discover cashouts
+    cash_res = g.query("MATCH (a:Account) WHERE a.entity_type = 'crypto_exchange' RETURN a.id")
+    cashouts = [row[0] for row in cash_res.result_set]
+    if not cashouts:
+        cashout_id = f"CASHOUT_{_uid()}"
+        g.query("""
+            MERGE (a:Account {id: $id})
+            SET a.name = 'Zenith Global Exchange', a.country = 'SC', a.balance = 2500000.0,
+                a.risk_score = 0.45, a.is_suspicious = false, a.entity_type = 'crypto_exchange',
+                a.created_at = $ts
+        """, {"id": cashout_id, "ts": datetime.utcnow().isoformat()})
+        cashouts.append(cashout_id)
+
+    seeded_count = 0
+    now = datetime.utcnow()
+
+    for idx, (r_id, rdata) in enumerate(rings.items()):
+        shell = rdata["shell"]
+        mules = rdata["mules"]
+        if not shell or len(mules) < 2:
+            continue
+        cashout = cashouts[idx % len(cashouts)]
+
+        # Sequence 1: 3-hop high-velocity mule pass-through (all under 30 mins)
+        # Shell -> Mule 1 -> Mule 2 -> Cashout
+        base_time = now - timedelta(days=1, hours=(idx * 4 + 2), minutes=15)
+        amt0 = round(random.uniform(9800, 9950), 2)
+        amt1 = round(amt0 - random.uniform(180, 300), 2)
+        amt2 = round(amt1 - random.uniform(150, 250), 2)
+
+        t0 = base_time
+        t1 = t0 + timedelta(minutes=random.randint(7, 12), seconds=random.randint(10, 45))
+        t2 = t1 + timedelta(minutes=random.randint(9, 15), seconds=random.randint(10, 45))
+
+        g.query("""
+            MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+            CREATE (src)-[:TRANSACTED_WITH {
+                id: $tx_id, amount: $amount, currency: 'USD',
+                timestamp: $ts, is_suspicious: true, channel: 'wire',
+                pattern: 'rapid_pass_through'
+            }]->(dst)
+        """, {"src": shell, "dst": mules[0], "tx_id": f"TX_RAPID_{_uid()}", "amount": amt0, "ts": t0.isoformat()})
+
+        g.query("""
+            MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+            CREATE (src)-[:TRANSACTED_WITH {
+                id: $tx_id, amount: $amount, currency: 'wire',
+                timestamp: $ts, is_suspicious: true, channel: 'wire',
+                pattern: 'rapid_pass_through'
+            }]->(dst)
+        """, {"src": mules[0], "dst": mules[1], "tx_id": f"TX_RAPID_{_uid()}", "amount": amt1, "ts": t1.isoformat()})
+
+        g.query("""
+            MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+            CREATE (src)-[:TRANSACTED_WITH {
+                id: $tx_id, amount: $amount, currency: 'USDT',
+                timestamp: $ts, is_suspicious: true, channel: 'crypto',
+                pattern: 'rapid_pass_through'
+            }]->(dst)
+        """, {"src": mules[1], "dst": cashout, "tx_id": f"TX_RAPID_{_uid()}", "amount": amt2, "ts": t2.isoformat()})
+        seeded_count += 3
+
+        # Sequence 2: 2-hop rapid relay on secondary mules (e.g. 14 min turnaround)
+        if len(mules) >= 4:
+            base_time_b = now - timedelta(hours=(idx * 5 + 3), minutes=30)
+            amt_b0 = round(random.uniform(9700, 9900), 2)
+            amt_b1 = round(amt_b0 - random.uniform(150, 280), 2)
+            tb0 = base_time_b
+            tb1 = tb0 + timedelta(minutes=random.randint(8, 16), seconds=random.randint(5, 50))
+
+            g.query("""
+                MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+                CREATE (src)-[:TRANSACTED_WITH {
+                    id: $tx_id, amount: $amount, currency: 'USD',
+                    timestamp: $ts, is_suspicious: true, channel: 'wire',
+                    pattern: 'rapid_pass_through'
+                }]->(dst)
+            """, {"src": shell, "dst": mules[2], "tx_id": f"TX_RAPID_{_uid()}", "amount": amt_b0, "ts": tb0.isoformat()})
+
+            g.query("""
+                MATCH (src:Account {id: $src}), (dst:Account {id: $dst})
+                CREATE (src)-[:TRANSACTED_WITH {
+                    id: $tx_id, amount: $amount, currency: 'wire',
+                    timestamp: $ts, is_suspicious: true, channel: 'wire',
+                    pattern: 'rapid_pass_through'
+                }]->(dst)
+            """, {"src": mules[2], "dst": mules[3], "tx_id": f"TX_RAPID_{_uid()}", "amount": amt_b1, "ts": tb1.isoformat()})
+            seeded_count += 2
+
+    print(f"⚡ Seeded {seeded_count} rapid mule pass-through transactions!")
+    return seeded_count
 
 
 if __name__ == "__main__":

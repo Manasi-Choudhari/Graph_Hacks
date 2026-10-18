@@ -190,7 +190,10 @@ async def get_full_graph(limit: int = 150):
             dst.id as dst,
             type(r) as rel_type,
             r.amount as amount,
-            r.is_suspicious as is_suspicious
+            r.is_suspicious as is_suspicious,
+            r.timestamp as timestamp,
+            r.channel as channel,
+            r.pattern as pattern
         LIMIT $limit
         """
         edge_result = g.query(edge_query, {"limit": limit * 2})
@@ -203,9 +206,40 @@ async def get_full_graph(limit: int = 150):
                     "type": row[2] or "CONNECTED",
                     "amount": row[3],
                     "is_suspicious": row[4] or False,
+                    "timestamp": row[5] or "",
+                    "channel": row[6] or "",
+                    "pattern": row[7] or "",
                 })
 
         return {"nodes": nodes, "edges": edges}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Temporal Velocity & Sliding Window Replay ───────────────────────────────────
+
+@app.get("/api/temporal/velocity")
+async def get_temporal_velocity(
+    account_id: str | None = None,
+    window_minutes: int = 30,
+    min_amount: float = 500.0,
+    limit: int = 50,
+):
+    try:
+        return graph_tools.analyze_temporal_velocity(
+            account_id=account_id,
+            window_minutes=window_minutes,
+            min_amount=min_amount,
+            limit=limit,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/temporal/timeline")
+async def get_temporal_timeline(window_minutes: int = 30):
+    try:
+        return graph_tools.get_temporal_timeline(window_minutes=window_minutes)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

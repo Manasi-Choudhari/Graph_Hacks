@@ -17,6 +17,8 @@ export const sendChat      = (message, session_id) => api.post('/chat', { messag
 export const getActions    = (status) => api.get('/actions', { params: status ? { status } : {} }).then(r => r.data)
 export const reviewAction  = (id, decision) => api.post(`/actions/${id}/review`, { decision }).then(r => r.data)
 export const getCommunities = () => api.get('/graph/communities').then(r => r.data)
+export const getTemporalVelocity = (params = {}) => api.get('/temporal/velocity', { params }).then(r => r.data)
+export const getTemporalTimeline = (window_minutes = 30) => api.get('/temporal/timeline', { params: { window_minutes } }).then(r => r.data)
 export const ingestFile    = (formData) => api.post('/ingest/file', formData, { headers: { 'Content-Type': 'multipart/form-data' } }).then(r => r.data)
 export const ingestJson    = (data, mode = 'append') => api.post('/ingest/json', { data, mode }).then(r => r.data)
 export const ingestSample  = (mode = 'append') => api.post('/ingest/sample', null, { params: { mode } }).then(r => r.data)
