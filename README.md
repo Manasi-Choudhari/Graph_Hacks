@@ -42,7 +42,7 @@ An AI agent that investigates financial fraud by reasoning over a **FalkorDB gra
 |---|---|
 | README with setup instructions and graph data model | [Setup & Running](#-setup--running) · [Graph Data Model](#️-graph-data-model) |
 | Cypher queries / graph algorithms the product depends on | [Key Cypher Queries](#-key-cypher-queries) · [Agent Tools](#-agent-tools-served-over-mcp) |
-| Live deployment or complete local setup | Runs locally with one Docker container — see [Setup & Running](#-setup--running) (about 5 minutes) |
+| Live deployment or complete local setup | [Setup & Running](#-setup--running) (about 5 minutes locally) · single-container [Deploy](#️-deploy-single-container) with `Dockerfile` + `render.yaml` |
 | Graph map: nodes, relationships, how the agent queries them | [Graph Data Model](#️-graph-data-model) · [How the agent queries the graph](#how-the-agent-queries-the-graph) |
 | The graph doing the work | [The Graph Doing the Work](#-the-graph-doing-the-work) — a real investigation, step by step |
 
@@ -296,7 +296,7 @@ RETURN m ORDER BY m.timestamp DESC
 
 ## 🚀 Setup & Running
 
-There is no public deployment: the app needs your own LLM API keys and a FalkorDB instance, so it runs locally. The full setup takes about 5 minutes.
+Run it locally in about 5 minutes (below), or deploy it as a single container — see [Deploy](#️-deploy-single-container).
 
 ### Prerequisites
 - Docker (for FalkorDB)
@@ -367,6 +367,22 @@ Seeding wipes the graph and rebuilds the same deterministic dataset every time:
 - Structuring (transfers between $9,000 and $9,999), mule → shell collection, and a mule → mule → … → crypto cash-out layering chain per ring
 - Shared IPs / devices per ring (plus a few innocent shared-WiFi pairs as noise)
 - AlertEvents for all suspicious accounts
+
+### ☁️ Deploy (single container)
+
+The root `Dockerfile` builds the React UI and serves it from the FastAPI backend, so the UI, REST API, SSE streams and MCP endpoint share one URL. Point it at any FalkorDB instance (e.g. a free [FalkorDB Cloud](https://app.falkordb.cloud) database):
+
+```bash
+docker build -t fraudscope .
+docker run -p 8000:8000 \
+  -e FALKORDB_HOST=<host> -e FALKORDB_PORT=<port> \
+  -e FALKORDB_USERNAME=<user> -e FALKORDB_PASSWORD=<password> \
+  -e GROQ_API_KEY=<key> -e GEMINI_API_KEY=<key> \
+  fraudscope
+# open http://localhost:8000 — an empty graph is seeded automatically (AUTO_SEED=true)
+```
+
+On [Render](https://render.com), create a **Blueprint** from this repo (`render.yaml`) and fill in the FalkorDB and API-key variables. The platform's `PORT` is picked up automatically, and `/mcp/` accepts requests on the deployed domain.
 
 ---
 

@@ -16,7 +16,13 @@ def get_client() -> FalkorDB:
     if _client is None:
         host = os.getenv("FALKORDB_HOST", "localhost")
         port = int(os.getenv("FALKORDB_PORT", "6379"))
-        _client = FalkorDB(host=host, port=port)
+        _client = FalkorDB(
+            host=host,
+            port=port,
+            username=os.getenv("FALKORDB_USERNAME") or None,
+            password=os.getenv("FALKORDB_PASSWORD") or None,
+            ssl=os.getenv("FALKORDB_SSL", "false").lower() == "true",
+        )
     return _client
 
 

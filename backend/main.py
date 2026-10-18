@@ -45,6 +45,12 @@ async def lifespan(_: FastAPI):
     try:
         init_schema()
         print("✅ FalkorDB connected and schema initialized")
+        if os.getenv("AUTO_SEED", "false").lower() == "true":
+            count = get_graph().query("MATCH (a:Account) RETURN count(a)").result_set[0][0]
+            if count == 0:
+                import seed
+                seed.seed_graph()
+                print("🌱 Empty graph seeded with the demo dataset")
     except Exception as e:
         print(f"⚠️  FalkorDB not ready yet: {e}")
         print("   Make sure FalkorDB is running: docker run -p 6379:6379 falkordb/falkordb:latest")
@@ -604,6 +610,17 @@ async def ingest_sample_syndicate(mode: str = "append"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Built frontend (single-container deployment) ──────────────────────────────
+
+FRONTEND_DIST = os.getenv(
+    "FRONTEND_DIST", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "dist")
+)
+if os.path.isdir(FRONTEND_DIST):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")),
+                reload=os.getenv("DEBUG", "true").lower() == "true")
