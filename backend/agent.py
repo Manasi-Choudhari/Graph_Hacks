@@ -306,7 +306,7 @@ async def _execute_gemini_agent(model_name: str, gemini_tools, user_message: str
         await on_event({"type": "status", "message": f"Thinking ({model_name})…"})
     response = await asyncio.to_thread(chat.send_message, user_message)
 
-    for _ in range(MAX_TOOL_ROUNDS + 1):
+    for round_idx in range(MAX_TOOL_ROUNDS + 1):
         function_calls, text_parts = [], []
         for part in response.candidates[0].content.parts:
             if hasattr(part, "function_call") and part.function_call.name:
@@ -317,6 +317,12 @@ async def _execute_gemini_agent(model_name: str, gemini_tools, user_message: str
         if not function_calls:
             response_text = " ".join(text_parts)
             break
+
+        is_last_round = (round_idx >= MAX_TOOL_ROUNDS)
+        tool_cfg = (
+            protos.ToolConfig(function_calling_config=protos.FunctionCallingConfig(mode=protos.FunctionCallingConfig.Mode.NONE))
+            if is_last_round else None
+        )
 
         function_responses = []
         for fc in function_calls:
@@ -332,7 +338,13 @@ async def _execute_gemini_agent(model_name: str, gemini_tools, user_message: str
         if on_event:
             await on_event({"type": "status", "message": "Reasoning over graph results…"})
         try:
-            response = await asyncio.to_thread(chat.send_message, function_responses)
+            if tool_cfg:
+                response = await asyncio.to_thread(chat.send_message, function_responses, tool_config=tool_cfg)
+                parts = [p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text]
+                response_text = " ".join(parts)
+                break
+            else:
+                response = await asyncio.to_thread(chat.send_message, function_responses)
         except Exception as e:
             raise PartialRunError(e, trace) from e
 
@@ -353,7 +365,7 @@ async def run_agent_gemini(user_message: str, session_id: str, conversation_hist
 
     requested_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     candidates = [requested_model]
-    for fb in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash"]:
+    for fb in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-2.5-flash"]:
         if fb not in candidates:
             candidates.append(fb)
 

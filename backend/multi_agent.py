@@ -175,7 +175,7 @@ async def run_specialist_agent(
             return await _run_specialist_groq(role_info, prompt, scoped_tools, user_message, session_id, conversation_history, on_event)
 
 
-async def _run_specialist_gemini(role_info, prompt, scoped_tools, user_message, session_id, conversation_history, on_event):
+async def _run_specialist_gemini(role_info, prompt, scoped_tools, user_message, session_id, conversation_history, on_event, max_rounds: int = MAX_TOOL_ROUNDS):
     import google.generativeai as genai
     from google.generativeai.types import FunctionDeclaration, Tool
     import google.generativeai.protos as protos
@@ -187,59 +187,86 @@ async def _run_specialist_gemini(role_info, prompt, scoped_tools, user_message, 
         for s in scoped_tools
     ])
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
-    model = genai.GenerativeModel(
-        model_name=model_name,
-        system_instruction=prompt,
-        tools=[gemini_tools],
-        generation_config={"max_output_tokens": 1024, "temperature": 0.2},
-    )
-    chat = model.start_chat(history=_gemini_history(conversation_history))
-    trace: dict = {"tool_calls": [], "tool_results": []}
-    response_text = ""
+    requested_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
+    candidates = [requested_model]
+    for fb in ["gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-2.5-flash"]:
+        if fb not in candidates:
+            candidates.append(fb)
 
-    if on_event:
-        await on_event({"type": "status", "message": f"{role_info['title']} is analyzing…", "role": role_info["title"]})
-
-    response = await asyncio.to_thread(chat.send_message, user_message)
-
-    for _ in range(MAX_TOOL_ROUNDS + 1):
-        function_calls, text_parts = [], []
-        for part in response.candidates[0].content.parts:
-            if hasattr(part, "function_call") and part.function_call.name:
-                function_calls.append(part.function_call)
-            elif hasattr(part, "text") and part.text:
-                text_parts.append(part.text)
-
-        if not function_calls:
-            response_text = " ".join(text_parts)
-            break
-
-        function_responses = []
-        for fc in function_calls:
-            raw_args = type(fc).to_dict(fc).get("args", {}) or {}
-            result = await _run_tool(fc.name, raw_args, session_id, trace, on_event)
-            function_responses.append(
-                protos.Part(function_response=protos.FunctionResponse(
-                    name=fc.name,
-                    response={"result": _format_tool_result_for_llm(fc.name, result)},
-                ))
+    last_err = None
+    for model_name in candidates:
+        try:
+            model = genai.GenerativeModel(
+                model_name=model_name,
+                system_instruction=prompt,
+                tools=[gemini_tools],
+                generation_config={"max_output_tokens": 1024, "temperature": 0.2},
             )
+            chat = model.start_chat(history=_gemini_history(conversation_history))
+            trace: dict = {"tool_calls": [], "tool_results": []}
+            response_text = ""
 
-        if on_event:
-            await on_event({"type": "status", "message": f"{role_info['title']} is evaluating graph findings…", "role": role_info["title"]})
-        response = await asyncio.to_thread(chat.send_message, function_responses)
+            if on_event:
+                await on_event({"type": "status", "message": f"{role_info['title']} is analyzing…", "role": role_info["title"]})
 
-    return {
-        "response": response_text,
-        "role": role_info["title"],
-        "badge": role_info["badge"],
-        **trace,
-        "session_id": session_id,
-    }
+            response = await asyncio.to_thread(chat.send_message, user_message)
+
+            for round_idx in range(max_rounds + 1):
+                function_calls, text_parts = [], []
+                for part in response.candidates[0].content.parts:
+                    if hasattr(part, "function_call") and part.function_call.name:
+                        function_calls.append(part.function_call)
+                    elif hasattr(part, "text") and part.text:
+                        text_parts.append(part.text)
+
+                if not function_calls:
+                    response_text = " ".join(text_parts)
+                    break
+
+                is_last_round = (round_idx >= max_rounds)
+                tool_cfg = (
+                    protos.ToolConfig(function_calling_config=protos.FunctionCallingConfig(mode=protos.FunctionCallingConfig.Mode.NONE))
+                    if is_last_round else None
+                )
+
+                function_responses = []
+                for fc in function_calls:
+                    raw_args = type(fc).to_dict(fc).get("args", {}) or {}
+                    result = await _run_tool(fc.name, raw_args, session_id, trace, on_event)
+                    function_responses.append(
+                        protos.Part(function_response=protos.FunctionResponse(
+                            name=fc.name,
+                            response={"result": _format_tool_result_for_llm(fc.name, result)},
+                        ))
+                    )
+
+                if on_event:
+                    await on_event({"type": "status", "message": f"{role_info['title']} is evaluating graph findings…", "role": role_info["title"]})
+
+                if tool_cfg:
+                    response = await asyncio.to_thread(chat.send_message, function_responses, tool_config=tool_cfg)
+                    parts = [p.text for p in response.candidates[0].content.parts if hasattr(p, "text") and p.text]
+                    response_text = " ".join(parts)
+                    break
+                else:
+                    response = await asyncio.to_thread(chat.send_message, function_responses)
+
+            return {
+                "response": response_text,
+                "role": role_info["title"],
+                "badge": role_info["badge"],
+                **trace,
+                "session_id": session_id,
+            }
+        except Exception as e:
+            print(f"[WARN] Specialist {role_info.get('title')} with Gemini model {model_name} failed: {e}")
+            last_err = e
+            continue
+
+    raise last_err or RuntimeError("All Gemini model candidates failed")
 
 
-async def _run_specialist_groq(role_info, prompt, scoped_tools, user_message, session_id, conversation_history, on_event):
+async def _run_specialist_groq(role_info, prompt, scoped_tools, user_message, session_id, conversation_history, on_event, max_rounds: int = MAX_TOOL_ROUNDS):
     from groq import Groq
     import os
 
@@ -255,8 +282,8 @@ async def _run_specialist_groq(role_info, prompt, scoped_tools, user_message, se
     trace: dict = {"tool_calls": [], "tool_results": []}
     response_text = ""
 
-    for round_idx in range(MAX_TOOL_ROUNDS + 1):
-        allow_tools = round_idx < MAX_TOOL_ROUNDS
+    for round_idx in range(max_rounds + 1):
+        allow_tools = round_idx < max_rounds
         if on_event:
             await on_event({"type": "status", "message": f"{role_info['title']} reasoning…", "role": role_info["title"]})
 
@@ -594,24 +621,28 @@ async def run_single_agent(
                 result = await _run_specialist_groq(
                     role_info, SINGLE_AGENT_PROMPT, scoped_tools,
                     full_query, session_id, conversation_history, tool_aware_event,
+                    max_rounds=3,
                 )
             except Exception as e:
                 print(f"[WARN] Single-Agent (Groq) failed: {e}. Fallback to Gemini…")
                 result = await _run_specialist_gemini(
                     role_info, SINGLE_AGENT_PROMPT, scoped_tools,
                     full_query, session_id, conversation_history, tool_aware_event,
+                    max_rounds=3,
                 )
         else:
             try:
                 result = await _run_specialist_gemini(
                     role_info, SINGLE_AGENT_PROMPT, scoped_tools,
                     full_query, session_id, conversation_history, tool_aware_event,
+                    max_rounds=3,
                 )
             except Exception as e:
                 print(f"[WARN] Single-Agent (Gemini) failed: {e}. Fallback to Groq…")
                 result = await _run_specialist_groq(
                     role_info, SINGLE_AGENT_PROMPT, scoped_tools,
                     full_query, session_id, conversation_history, tool_aware_event,
+                    max_rounds=3,
                 )
     except Exception as e:
         result = {
