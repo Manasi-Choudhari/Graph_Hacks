@@ -4,7 +4,8 @@ import remarkGfm from 'remark-gfm'
 import GraphCanvas from './GraphCanvas.jsx'
 import {
   createSession, getOverview, getAlerts, getFullGraph,
-  getSubgraph, streamChat, seedDatabase, searchAccounts, getMemory,
+  getSubgraph, streamChat, streamSingleAgent, streamSwarm,
+  seedDatabase, searchAccounts, getMemory,
   getActions, reviewAction, getCommunities,
   ingestFile, ingestSample, getTemplateUrl
 } from './api.js'
@@ -144,8 +145,101 @@ function ToolCallCard({ tc, result }) {
   )
 }
 
+/* ── Agent Mode Badge ────────────────────────────────────────────────── */
+const AGENT_MODES = [
+  {
+    id: 'standard',
+    label: 'Standard',
+    badge: '🤖 Standard',
+    color: 'var(--accent-cyan)',
+    desc: 'Single tool-calling agent — fast, direct answers.',
+  },
+  {
+    id: 'single_agent',
+    label: 'Single-Agent Investigator',
+    badge: '🕵️ Single Agent',
+    color: 'var(--accent-glow)',
+    desc: 'One unified investigator: triage → forensics → compliance in one autonomous pass.',
+  },
+  {
+    id: 'swarm',
+    label: 'Multi-Agent Swarm',
+    badge: '🐝 Swarm',
+    color: 'var(--accent-purple)',
+    desc: '3 specialist agents: Triage → Graph Forensics → AML Compliance Officer.',
+  },
+]
+
+/* ── Phase Progress Bar (Single-Agent) ───────────────────────────────── */
+function SingleAgentPhaseBar({ phase }) {
+  const phases = [
+    { n: 1, icon: '🛡️', label: 'Triage' },
+    { n: 2, icon: '🔬', label: 'Forensics' },
+    { n: 3, icon: '📋', label: 'Compliance' },
+  ]
+  return (
+    <div style={{
+      display: 'flex', gap: 0, margin: '8px 0 4px', borderRadius: 8,
+      overflow: 'hidden', border: '1px solid var(--border)',
+    }}>
+      {phases.map(p => (
+        <div key={p.n} style={{
+          flex: 1, padding: '6px 4px', textAlign: 'center', fontSize: 11,
+          background: phase >= p.n ? 'rgba(99,102,241,0.18)' : 'var(--bg-elevated)',
+          borderRight: p.n < 3 ? '1px solid var(--border)' : 'none',
+          color: phase >= p.n ? 'var(--accent-glow)' : 'var(--text-muted)',
+          fontWeight: phase === p.n ? 700 : 400,
+          transition: 'all 0.3s',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4,
+        }}>
+          <span>{p.icon}</span>
+          <span>{p.label}</span>
+          {phase > p.n && <span style={{ color: 'var(--success)' }}>✓</span>}
+          {phase === p.n && <span style={{ color: 'var(--accent-primary)' }}>●</span>}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/* ── Swarm Stage Banner ──────────────────────────────────────────────── */
+function SwarmStageBanner({ stage, totalStages, title, role }) {
+  const roleColors = { triage: 'var(--accent-cyan)', forensics: 'var(--accent-primary)', compliance: 'var(--accent-purple)' }
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px',
+      background: 'var(--bg-elevated)', borderRadius: 8,
+      border: `1px solid ${roleColors[role] || 'var(--border)'}`,
+      margin: '6px 0', fontSize: 12,
+    }}>
+      <div style={{
+        width: 22, height: 22, borderRadius: '50%',
+        background: roleColors[role] || 'var(--accent-primary)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: 11, fontWeight: 700, color: '#fff', flexShrink: 0,
+      }}>{stage}</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{title}</div>
+        <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>Stage {stage} of {totalStages}</div>
+      </div>
+      <div style={{
+        display: 'flex', gap: 2,
+      }}>
+        {Array.from({ length: totalStages }).map((_, i) => (
+          <div key={i} style={{
+            width: 18, height: 4, borderRadius: 2,
+            background: i < stage ? (roleColors[role] || 'var(--accent-primary)') : 'var(--border)',
+            transition: 'background 0.3s',
+          }} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /* ── ChatPanel ───────────────────────────────────────────────────────── */
-function ChatPanel({ sessionId, onEvidence, onActionProposed }) {
+function ChatPanel({ sessionId, onEvidence, onActionProposed, agentMode = 'standard', onAgentModeChange }) {
+  const modeInfo = AGENT_MODES.find(m => m.id === agentMode) || AGENT_MODES[0]
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -156,13 +250,16 @@ Try asking me:
 - *"Who are the money hubs?"* — PageRank / betweenness
 - *"How is MULE_x connected to SHELL_y?"* — shortest evidence paths
 - *"How much money reached the cash-out exchange?"* — max flow
-- *"Sweep the graph and propose actions"* — you approve them in the Actions tab`,
+- *"Sweep the graph and propose actions"* — you approve them in the Actions tab
+
+💡 **Tip:** Use **Single-Agent Investigator** or **Multi-Agent Swarm** mode for a full triage → forensics → compliance report.`,
       toolCalls: [],
       toolResults: [],
     }
   ])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showModeMenu, setShowModeMenu] = useState(false)
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -184,10 +281,28 @@ Try asking me:
     if (!msg || loading || !sessionId) return
 
     setInput('')
+    setShowModeMenu(false)
+    const isSwarm = agentMode === 'swarm'
+    const isSingle = agentMode === 'single_agent'
+
     setMessages(prev => [
       ...prev,
       { role: 'user', content: msg, toolCalls: [], toolResults: [] },
-      { role: 'assistant', content: '', toolCalls: [], toolResults: [], live: true, status: 'Thinking…' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [],
+        toolResults: [],
+        live: true,
+        status: isSingle ? '🕵️ Unified investigator initializing…' : isSwarm ? '🐝 Swarm initializing…' : 'Thinking…',
+        agentMode,
+        // phase tracking for single-agent
+        currentPhase: isSingle ? 1 : null,
+        // swarm stage tracking
+        swarmStage: isSwarm ? null : undefined,
+        swarmStageTitle: null,
+        swarmStageRole: null,
+      },
     ])
     setLoading(true)
 
@@ -201,6 +316,21 @@ Try asking me:
       switch (ev.type) {
         case 'status':
           updateLive(m => ({ ...m, status: ev.message }))
+          break
+        case 'single_agent_phase':
+          updateLive(m => ({ ...m, currentPhase: ev.phase, status: ev.message }))
+          break
+        case 'swarm_stage_start':
+          updateLive(m => ({
+            ...m,
+            swarmStage: ev.stage,
+            swarmStageTitle: ev.title,
+            swarmStageRole: ev.role,
+            status: ev.message,
+          }))
+          break
+        case 'agent_start':
+          updateLive(m => ({ ...m, status: `${ev.badge} starting…` }))
           break
         case 'tool_start':
           updateLive(m => ({
@@ -226,14 +356,21 @@ Try asking me:
             if (ev.tool === 'propose_action') onActionProposed?.()
           }
           break
-        case 'response':
+        case 'response': {
+          const modeLabel = ev.is_swarm
+            ? `🐝 Swarm · ${ev.tool_count} tool calls · ${(ev.elapsed_ms / 1000).toFixed(1)}s`
+            : ev.is_single_agent
+              ? `🕵️ Single Agent · Phase ${ev.phases_completed}/3 · ${ev.tool_count} tool calls · ${(ev.elapsed_ms / 1000).toFixed(1)}s`
+              : `${ev.tool_count} graph tool call(s) · ${(ev.elapsed_ms / 1000).toFixed(1)}s`
           updateLive(m => ({
             ...m,
             content: ev.content,
             live: false,
-            meta: `${ev.tool_count} graph tool call(s) · ${(ev.elapsed_ms / 1000).toFixed(1)}s`,
+            meta: modeLabel,
+            currentPhase: isSingle ? 3 : m.currentPhase,
           }))
           break
+        }
         case 'error':
           updateLive(m => ({ ...m, content: `❌ Error: ${ev.content}`, live: false }))
           break
@@ -243,13 +380,19 @@ Try asking me:
     }
 
     try {
-      await streamChat(msg, sessionId, handleEvent)
+      if (isSingle) {
+        await streamSingleAgent(msg, sessionId, handleEvent)
+      } else if (isSwarm) {
+        await streamSwarm(msg, sessionId, handleEvent)
+      } else {
+        await streamChat(msg, sessionId, handleEvent)
+      }
     } catch (err) {
       updateLive(m => ({ ...m, content: `❌ Error: ${err.message || 'Request failed'}`, live: false }))
     } finally {
       setLoading(false)
     }
-  }, [input, loading, sessionId, onEvidence, onActionProposed])
+  }, [input, loading, sessionId, onEvidence, onActionProposed, agentMode])
 
   const handleKey = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
@@ -259,12 +402,36 @@ Try asking me:
     <>
       <div className="chat-header">
         <div className="chat-title">
-          <div className="agent-avatar">🕵️</div>
-          <div>
-            <div>FraudScope Agent</div>
+          <div className="agent-avatar" style={{ fontSize: 18 }}>
+            {agentMode === 'swarm' ? '🐝' : agentMode === 'single_agent' ? '🕵️' : '🤖'}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span>FraudScope AI</span>
+              {/* Mode Pill */}
+              <button
+                id="agent-mode-toggle"
+                onClick={() => setShowModeMenu(m => !m)}
+                style={{
+                  background: 'rgba(99,102,241,0.12)',
+                  border: `1px solid ${modeInfo.color}55`,
+                  borderRadius: 20,
+                  padding: '2px 8px',
+                  fontSize: 10,
+                  color: modeInfo.color,
+                  cursor: 'pointer',
+                  fontFamily: 'Inter, sans-serif',
+                  fontWeight: 600,
+                  display: 'flex', alignItems: 'center', gap: 3,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {modeInfo.badge} <span style={{ opacity: 0.7 }}>▾</span>
+              </button>
+            </div>
             <div style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>
               {loading ? (
-                <span style={{ color: 'var(--accent-cyan)' }}>● Investigating…</span>
+                <span style={{ color: modeInfo.color }}>● Investigating…</span>
               ) : '● Online'}
             </div>
           </div>
@@ -272,9 +439,54 @@ Try asking me:
         {sessionId && <div className="session-badge">{sessionId.slice(0, 8)}</div>}
       </div>
 
+      {/* Agent Mode Dropdown */}
+      {showModeMenu && (
+        <div style={{
+          position: 'absolute', top: 62, right: 12, zIndex: 100,
+          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          borderRadius: 12, padding: 8, width: 260, boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', padding: '4px 8px 8px', letterSpacing: 1 }}>SELECT AGENT MODE</div>
+          {AGENT_MODES.map(m => (
+            <button
+              key={m.id}
+              id={`mode-${m.id}`}
+              onClick={() => { onAgentModeChange?.(m.id); setShowModeMenu(false) }}
+              style={{
+                width: '100%', textAlign: 'left', background: agentMode === m.id ? `${m.color}18` : 'transparent',
+                border: `1px solid ${agentMode === m.id ? m.color + '55' : 'transparent'}`,
+                borderRadius: 8, padding: '8px 10px', cursor: 'pointer',
+                marginBottom: 4, color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif',
+              }}
+            >
+              <div style={{ fontSize: 12, fontWeight: 600, color: agentMode === m.id ? m.color : 'var(--text-primary)', marginBottom: 2 }}>
+                {m.badge}
+              </div>
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{m.desc}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="chat-messages">
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role === 'user' ? 'user' : 'assistant'}`}>
+
+            {/* Single-Agent Phase Progress Bar */}
+            {msg.role === 'assistant' && msg.agentMode === 'single_agent' && msg.currentPhase && (
+              <SingleAgentPhaseBar phase={msg.currentPhase} />
+            )}
+
+            {/* Swarm Stage Banner */}
+            {msg.role === 'assistant' && msg.agentMode === 'swarm' && msg.swarmStage && (
+              <SwarmStageBanner
+                stage={msg.swarmStage}
+                totalStages={3}
+                title={msg.swarmStageTitle}
+                role={msg.swarmStageRole}
+              />
+            )}
+
             {/* Tool calls (before response) */}
             {msg.role === 'assistant' && msg.toolCalls?.length > 0 && (
               <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: 4, marginBottom: 6 }}>
@@ -712,6 +924,7 @@ export default function App() {
   const [dbStatus, setDbStatus] = useState('checking')
   const [actions, setActions] = useState([])
   const [showIngestModal, setShowIngestModal] = useState(false)
+  const [agentMode, setAgentMode] = useState('standard')  // 'standard' | 'single_agent' | 'swarm'
 
   const handleIngestSuccess = async (res) => {
     await handleRefresh()
@@ -980,11 +1193,13 @@ export default function App() {
       </main>
 
       {/* ── Chat ── */}
-      <aside className="chat-panel">
+      <aside className="chat-panel" style={{ position: 'relative' }}>
         <ChatPanel
           sessionId={sessionId}
           onEvidence={handleEvidence}
           onActionProposed={refreshActions}
+          agentMode={agentMode}
+          onAgentModeChange={setAgentMode}
         />
       </aside>
 

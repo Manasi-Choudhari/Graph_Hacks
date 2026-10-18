@@ -47,3 +47,55 @@ export async function streamChat(message, session_id, onEvent) {
     }
   }
 }
+
+/** POST /api/chat/stream/single — Single-Agent Unified Investigator SSE stream. */
+export async function streamSingleAgent(message, session_id, onEvent) {
+  const res = await fetch('/api/chat/stream/single', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id }),
+  })
+  if (!res.ok || !res.body) throw new Error(`Single-agent stream failed: HTTP ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('')
+      if (data) onEvent(JSON.parse(data))
+    }
+  }
+}
+
+/** POST /api/chat/stream/swarm — Multi-Agent Swarm SSE stream. */
+export async function streamSwarm(message, session_id, onEvent) {
+  const res = await fetch('/api/chat/stream/swarm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, session_id }),
+  })
+  if (!res.ok || !res.body) throw new Error(`Swarm stream failed: HTTP ${res.status}`)
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      const data = chunk.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('')
+      if (data) onEvent(JSON.parse(data))
+    }
+  }
+}

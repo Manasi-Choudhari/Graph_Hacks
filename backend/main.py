@@ -31,6 +31,7 @@ from db import init_schema, get_graph
 import tools as graph_tools
 from agent import run_agent, clear_tool_cache
 from mcp_server import mcp
+from multi_agent import run_collaborative_swarm, run_single_agent
 import ingestion
 
 # ── App setup ────────────────────────────────────────────────────────────────
@@ -310,6 +311,90 @@ async def chat_stream(req: ChatRequest):
 
     return StreamingResponse(events(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/chat/stream/single")
+async def chat_stream_single(req: ChatRequest):
+    """SSE: Run the Single-Agent Unified Investigator (triage + forensics + compliance in one pass)."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_event(event: dict):
+        await queue.put(event)
+
+    async def worker():
+        try:
+            result = await run_single_agent(
+                req.message, req.session_id, sessions.get(req.session_id, []), on_event
+            )
+            _remember(req.session_id, req.message, result["response"])
+            await queue.put({
+                "type": "response",
+                "content": result["response"],
+                "elapsed_ms": result.get("elapsed_ms"),
+                "tool_count": len(result.get("tool_calls", [])),
+                "is_single_agent": True,
+                "phases_completed": result.get("phases_completed", 3),
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await queue.put({"type": "error", "content": str(e)})
+        finally:
+            await queue.put(None)
+
+    async def events():
+        task = asyncio.create_task(worker())
+        try:
+            while (event := await queue.get()) is not None:
+                yield _sse(event)
+        finally:
+            task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/chat/stream/swarm")
+async def chat_stream_swarm(req: ChatRequest):
+    """SSE: Run the Multi-Agent Specialist Swarm (Triage → Forensics → Compliance pipeline)."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_event(event: dict):
+        await queue.put(event)
+
+    async def worker():
+        try:
+            result = await run_collaborative_swarm(
+                req.message, req.session_id, sessions.get(req.session_id, []), on_event
+            )
+            _remember(req.session_id, req.message, result["response"])
+            await queue.put({
+                "type": "response",
+                "content": result["response"],
+                "elapsed_ms": result.get("elapsed_ms"),
+                "tool_count": len(result.get("tool_calls", [])),
+                "is_swarm": True,
+                "stages": result.get("stages", []),
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            await queue.put({"type": "error", "content": str(e)})
+        finally:
+            await queue.put(None)
+
+    async def events():
+        task = asyncio.create_task(worker())
+        try:
+            while (event := await queue.get()) is not None:
+                yield _sse(event)
+        finally:
+            task.cancel()
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 
 
 # ── Actions (human-in-the-loop) ───────────────────────────────────────────────
