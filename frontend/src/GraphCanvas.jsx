@@ -345,9 +345,13 @@ export default function GraphCanvas({
 
   // Handle resize
   useEffect(() => {
-    const ro = new ResizeObserver(() => renderGraph())
+    let timer
+    const ro = new ResizeObserver(() => {
+      clearTimeout(timer)
+      timer = setTimeout(renderGraph, 150)
+    })
     if (svgRef.current) ro.observe(svgRef.current.parentElement)
-    return () => ro.disconnect()
+    return () => { clearTimeout(timer); ro.disconnect() }
   }, [renderGraph])
 
   const riskColor = (score) => {

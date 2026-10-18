@@ -105,6 +105,12 @@ function evidenceFromResult(r) {
 }
 
 /* ── ToolCallCard ────────────────────────────────────────────────────── */
+const MARKDOWN_COMPONENTS = {
+  table: ({ node, ...props }) => (
+    <div className="table-wrap"><table {...props} /></div>
+  ),
+}
+
 function ToolCallCard({ tc, result }) {
   const [open, setOpen] = useState(false)
   const failed = result && result.error
@@ -261,6 +267,9 @@ Try asking me:
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
   const [showModeMenu, setShowModeMenu] = useState(false)
+  const [fontSize, setFontSize] = useState(() => Number(localStorage.getItem('fs-chat-font')) || 13)
+  useEffect(() => { localStorage.setItem('fs-chat-font', fontSize) }, [fontSize])
+  const bumpFont = (d) => setFontSize(s => Math.min(20, Math.max(11, s + d)))
   const bottomRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -408,7 +417,7 @@ Try asking me:
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span>FraudScope AI</span>
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>FraudScope AI</span>
               {/* Mode Pill */}
               <button
                 id="agent-mode-toggle"
@@ -436,6 +445,10 @@ Try asking me:
               ) : '● Online'}
             </div>
           </div>
+        </div>
+        <div className="font-controls" title="Chat text size">
+          <button onClick={() => bumpFont(-1)} disabled={fontSize <= 11} aria-label="Smaller text">A−</button>
+          <button onClick={() => bumpFont(1)} disabled={fontSize >= 20} aria-label="Larger text">A+</button>
         </div>
         {sessionId && <div className="session-badge">{sessionId.slice(0, 8)}</div>}
       </div>
@@ -469,7 +482,7 @@ Try asking me:
         </div>
       )}
 
-      <div className="chat-messages">
+      <div className="chat-messages" style={{ '--chat-font': `${fontSize}px` }}>
         {messages.map((msg, i) => (
           <div key={i} className={`message ${msg.role === 'user' ? 'user' : 'assistant'}`}>
 
@@ -508,7 +521,7 @@ Try asking me:
               <div className="message-bubble">
                 {msg.role === 'assistant' ? (
                   <div className="markdown-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{msg.content}</ReactMarkdown>
                   </div>
                 ) : msg.content}
               </div>
@@ -1137,6 +1150,8 @@ function TemporalReplayBar({
 }
 
 /* ── App ──────────────────────────────────────────────────────────────── */
+const DEFAULT_CHAT_WIDTH = 420
+
 export default function App() {
   const [sessionId, setSessionId] = useState(null)
   const [overview, setOverview] = useState(null)
@@ -1152,6 +1167,24 @@ export default function App() {
   const [actions, setActions] = useState([])
   const [showIngestModal, setShowIngestModal] = useState(false)
   const [agentMode, setAgentMode] = useState('standard')  // 'standard' | 'single_agent' | 'swarm'
+  const [chatWidth, setChatWidth] = useState(() => Number(localStorage.getItem('fs-chat-width')) || DEFAULT_CHAT_WIDTH)
+  useEffect(() => { localStorage.setItem('fs-chat-width', chatWidth) }, [chatWidth])
+
+  const startChatResize = (e) => {
+    e.preventDefault()
+    const onMove = (ev) => {
+      const max = Math.min(960, window.innerWidth - 420)
+      setChatWidth(Math.round(Math.max(320, Math.min(max, window.innerWidth - ev.clientX))))
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      document.body.classList.remove('resizing')
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    document.body.classList.add('resizing')
+  }
 
   // Temporal Replay & Velocity Analysis States
   const [temporalActive, setTemporalActive] = useState(false)
@@ -1341,7 +1374,7 @@ export default function App() {
   ]
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" style={{ '--chat-w': `${chatWidth}px` }}>
       {/* ── Header ── */}
       <header className="header">
         <div className="header-brand">
@@ -1529,6 +1562,12 @@ export default function App() {
 
       {/* ── Chat ── */}
       <aside className="chat-panel" style={{ position: 'relative' }}>
+        <div
+          className="chat-resizer"
+          onPointerDown={startChatResize}
+          onDoubleClick={() => setChatWidth(DEFAULT_CHAT_WIDTH)}
+          title="Drag to resize · double-click to reset"
+        />
         <ChatPanel
           sessionId={sessionId}
           onEvidence={handleEvidence}

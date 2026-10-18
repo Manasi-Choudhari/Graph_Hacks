@@ -1,9 +1,40 @@
+<div align="center">
+
 # 🕵️ FraudScope AI
 
-> **Graph Hacks Hackathon — Track: Agents That Act on Connected Data**
-> Powered by [FalkorDB](https://www.falkordb.com) · Built with Gemini + Groq
+### An AI investigator that finds money-laundering rings by reasoning over a graph — and proposes what to do about them.
+
+<p>
+  <img alt="Track 1" src="https://img.shields.io/badge/Graph%20Hacks-Track%201%20%C2%B7%20Agents%20That%20Act-7c3aed?style=for-the-badge">
+  <img alt="FalkorDB" src="https://img.shields.io/badge/FalkorDB-graph%20engine-ff4f4f?style=for-the-badge">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-17%20tools-0ea5e9?style=for-the-badge">
+</p>
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black">
+  <img alt="D3" src="https://img.shields.io/badge/D3.js-graph%20view-F9A03C?logo=d3dotjs&logoColor=white">
+  <img alt="LLMs" src="https://img.shields.io/badge/LLM-Groq%20%2B%20Gemini-111827">
+</p>
+
+[**The graph doing the work**](#-the-graph-doing-the-work) · [**Graph model**](#️-graph-data-model) · [**Cypher & algorithms**](#-key-cypher-queries) · [**Run it locally**](#-setup--running) · [**MCP**](#-use-the-tools-from-claude-desktop-cursor-or-any-mcp-client)
+
+</div>
+
+---
 
 An AI agent that investigates financial fraud by reasoning over a **FalkorDB graph database**. The graph is not a visualization layer — it **is** the intelligence. Every decision the agent makes is driven by multi-hop graph traversals, Cypher queries, and graph-propagated risk scores.
+
+<table>
+<tr>
+<td align="center" width="25%"><h3>3 / 3</h3>fraud rings found by <code>algo.WCC</code><br/>with <b>no labels</b></td>
+<td align="center" width="25%"><h3>100%</h3>of shell → exchange money<br/>shown as layered by <code>algo.maxFlow</code></td>
+<td align="center" width="25%"><h3>21</h3>rapid mule relays caught<br/>by a temporal graph pattern</td>
+<td align="center" width="25%"><h3>3–150 ms</h3>per graph tool call<br/>(2–6 s per full answer)</td>
+</tr>
+</table>
+
+> **The agent never reads the answer key.** Rings, hubs, layering chains and cash-out paths are all discovered from the *shape* of the graph — shared devices, structured amounts, and how fast money moves — then every conclusion links back to the Cypher that produced it.
 
 ### Submission checklist
 
@@ -32,6 +63,7 @@ FraudScope AI is a financial crime investigation agent that:
 - **Streams its reasoning** — tool calls appear live in the chat and the evidence path lights up on the graph
 - **Remembers what it learns** — each session gets its own isolated memory graph in FalkorDB
 - **Explains every step** — shows the exact Cypher query and latency for each tool call
+- **Analyst-friendly workspace** — drag the chat panel wider for long reports, adjust text size with A− / A+, wide tables scroll inside the message (both settings are remembered)
 
 ---
 
@@ -402,6 +434,8 @@ Add it to Claude Desktop's `claude_desktop_config.json` or Cursor's `.cursor/mcp
 
 ## 📸 Demo
 
+Seed the graph, then try these prompts in order:
+
 1. **"Find all fraud rings"** — WCC discovers the 3 rings; the graph shows them live
 2. **"Who are the money hubs?"** — PageRank / betweenness highlight the key accounts
 3. **"Trace layering from the top shell company to its cash-out exchange"** — max flow shows the money moved only through mules; the path lights up
@@ -415,12 +449,13 @@ Add it to Claude Desktop's `claude_desktop_config.json` or Cursor's `.cursor/mcp
 
 **Track:** Agents That Act on Connected Data
 
-**Key focus areas addressed:**
-- ✅ Multi-hop reasoning — 4-hop ring traversal, shortest evidence paths, multi-hop max flow, timestamped 2-hop relay detection, three-phase single-agent and swarm investigations
-- ✅ Graph queries and algorithms as agent tools — WCC, PageRank, betweenness, SPpaths, maxFlow, temporal velocity
-- ✅ Tool selection through MCP — real MCP server, shared by the agent, Claude Desktop and Cursor
-- ✅ Actions based on what the graph shows — evidence-linked Action nodes with human approval
-- ✅ Explainable results — live tool stream, Cypher + latency per call, evidence path highlighted on the graph
+| Track 1 focus | How FraudScope AI delivers it |
+|---|---|
+| 🔗 **Multi-hop reasoning** | 4-hop ring traversal, shortest evidence paths, multi-hop max flow, timestamped 2-hop relay detection, three-phase single-agent and swarm investigations |
+| 🧮 **Graph queries & algorithms as agent tools** | `algo.WCC`, `algo.pageRank`, `algo.betweenness`, `algo.SPpaths`, `algo.maxFlow`, temporal velocity |
+| 🔌 **Tool selection through MCP** | A real MCP server (17 tools) shared by the in-app agent, Claude Desktop and Cursor |
+| ⚖️ **Actions based on what the graph shows** | Evidence-linked `(:Action)` nodes; a human approves before an account is frozen or a case is opened |
+| 🔍 **Explainable results** | Live tool stream, Cypher + latency per call, evidence path highlighted on the graph |
 
 ---
 
@@ -430,4 +465,10 @@ This project was built with the assistance of AI coding tools (Antigravity IDE /
 
 ---
 
-*Built for Graph Hacks — WeMakeDevs × FalkorDB | October 2026*
+<div align="center">
+
+**Built for Graph Hacks — WeMakeDevs × FalkorDB · October 2026**
+
+*If you replace FalkorDB with a relational database, this agent stops finding fraud. The graph is the product.*
+
+</div>
